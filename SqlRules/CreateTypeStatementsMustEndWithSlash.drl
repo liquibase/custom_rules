@@ -1,0 +1,86 @@
+/*
+@author Liquibase
+@version 1.0
+@date July 26, 2024
+@description Oracle CREATE (OR REPLACE) TYPE statements must terminate with "/" character.
+
+Copyright (c) 2024 Liquibase, Inc. All Rights Reserved.
+
+Sample Passing Script
+-------------------------------------------------------------------------------
+CREATE TYPE customer_typ_demo AS OBJECT
+    ( customer_id        NUMBER(6)
+    , cust_first_name    VARCHAR2(20)
+    , cust_last_name     VARCHAR2(20)
+    ) ;
+/
+
+
+Sample Failing Script
+-------------------------------------------------------------------------------
+CREATE OR REPLACE TYPE customer_typ_demo AS OBJECT
+    ( customer_id        NUMBER(6)
+    , cust_first_name    VARCHAR2(20)
+    , cust_last_name     VARCHAR2(20)
+    ) ;
+
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add script to Rules -> SqlRules folder.
+2) To test outside of pacakger run: hammer runRules <path to script or folder> 
+
+*/
+
+package com.datical.hammer.core.sqlrules.CreateTypeStatementsNeedSlash
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+import com.datical.hammer.core.forecast.rules.RuleFunctions;
+
+
+/* @return false if validation fails; true otherwise */
+function boolean validateTerminator(String sql)
+{
+    System.out.println("Validation called: Create Type Terminator");
+	
+	String newline = System.getProperty("line.separator");
+	
+	//System.out.println("SQL: " + sql);
+	
+    sql = "\n" + sql + "\n";
+	sql = sql.trim();
+	
+	// Check if script contains create type
+	final String regex = "(create|replace)\\s*type";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(sql);
+	
+	while (matcher.find()) {
+
+      char lastChar = sql.charAt(sql.length() - 1);
+	  //System.out.println("Create Type statement found. Last character is: [" + lastChar + "]");
+      
+	  if (lastChar != '/') {	      
+		  return true;
+	  } else {
+		  return false;
+	  }
+    }
+		
+    return false;
+}
+
+rule "Create Type statements must end with slash"
+when
+		woc : WithoutComments(validateTerminator(getText().toLowerCase()))
+then
+		String errorMessage = "CREATE TYPE scripts must end with a termination character (/) in the Sql Script (" + woc.getSqlFile().getName() + ")";  
+		insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+end
