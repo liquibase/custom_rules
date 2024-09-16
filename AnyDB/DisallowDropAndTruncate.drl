@@ -1,0 +1,85 @@
+/*
+@author Liquibase
+@version 1.0
+@date Sept 16, 2024
+@description Fail if script contains DROP or TRUNCATE
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws an ERROR when a sql script contains 'DROP' or 'TRUNCATE'.
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+
+/*
+@author Liquibase
+@version 1.0
+@date Sept 16, 2024
+@description Do not allow DROP or TRUNCATE statements.
+
+Copyright (c) 2024 Liquibase, Inc. All Rights Reserved.
+
+
+Sample Failing Scripts
+-------------------------------------------------------------------------------
+DROP TABLE Shippers;
+
+TRUNCATE TABLE Categories;
+
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add script to Rules -> SqlRules folder.
+2) To test outside of pacakger run: hammer runRules <path to script or folder> 
+
+*/
+
+package com.datical.hammer.core.sqlrules.DropOrTruncate
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+/* @return false if validation fails; true otherwise */
+function boolean validateSql(String sql, String regex) {
+    System.out.println("Validation called: DropOrTruncate");
+	
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(sql);
+	
+	while (matcher.find()) {
+	  return true;
+    }
+	return false;
+}
+
+rule "DROP found in sql file"
+	when
+		woc : WithoutComments(validateSql(getText().toLowerCase(),"drop"))
+	then
+		String errorMessage = "Do not use DROP statements in your scripts.  See " + woc.getSqlFile().getName() + " on lines: " + woc.getLineNumbers("drop");
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+
+rule "TRUNCATE found in sql file"
+	when
+		woc : WithoutComments(validateSql(getText().toLowerCase(),"truncate"))
+	then
+		String errorMessage = "Do not use TRUNCATE statements in your scripts.  See " + woc.getSqlFile().getName() + " on lines: " + woc.getLineNumbers("truncate");
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+
+
