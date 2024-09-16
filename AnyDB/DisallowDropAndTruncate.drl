@@ -2,23 +2,6 @@
 @author Liquibase
 @version 1.0
 @date Sept 16, 2024
-@description Fail if script contains DROP or TRUNCATE
-*/
-
-/*
-README: 
-
-This is a SQL Rule which throws an ERROR when a sql script contains 'DROP' or 'TRUNCATE'.
-To Execute this rule use:
-hammer runRules [SQL file | SQL files folder]
-
-*/
-
-
-/*
-@author Liquibase
-@version 1.0
-@date Sept 16, 2024
 @description Do not allow DROP or TRUNCATE statements.
 
 Copyright (c) 2024 Liquibase, Inc. All Rights Reserved.
