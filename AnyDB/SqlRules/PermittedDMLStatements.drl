@@ -1,0 +1,114 @@
+/*
+@author Liquibase
+@version 1.0
+@date Nov 11, 2024
+@description Error if SQL script contains INSERT/MERGE/UPDATE/DELETE for table not in whitelist
+
+Copyright (c) 2024 Liquibase, Inc. All Rights Reserved.
+
+
+Sample Failing Script
+-------------------------------------------------------------------------------
+INSERT INTO TABLENAME_NOT_IN_LIST (column1, column2, ... ) VALUES ('value1', 'value2', ...);
+update tablename_not_in_list set column1 = ...;
+
+
+Sample Passing Script
+-------------------------------------------------------------------------------
+INSERT INTO TABLE1 (column1, column2, ... ) VALUES ('value1', 'value2', ...);
+update table1 set column1 = ...;
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add script to Rules -> SqlRules folder.
+2) To test outside of pacakger run: hammer runRules <path to script or folder> 
+
+
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws ERROR when a sql script contains an INSERT, MERGE, UPDATE, or DELETE from a table not specified in a whitelist.
+
+Script assumes that schema names are NOT included in the SQL script.
+
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+package com.datical.hammer.core.sqlrules.PermittedDMLStatements
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+/* @return false if validation fails; true otherwise */
+function boolean validateSql(String sql, String operationRegex, String operationName) {
+    System.out.println("Validation called: Permitted" + operationName);
+	
+	sql = sql.replaceAll("\\s{2,}", " ").trim();
+	
+	// Include SET in the tableList to exclude UPDATE SET within a MERGE statement
+	
+	String tableList = 	"SET|TABLE1|TABLE2|TABLE3";
+	
+	final String regex = operationRegex + "(?!(" + tableList + ")(\\s|\\())([^;]*)";	
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    final Matcher matcher = pattern.matcher(sql);
+	
+	while (matcher.find()) {
+	  return true;
+    }
+	return false;
+}
+
+rule "INSERT found for non-permitted table"
+    salience 1
+	when
+		woc : WithoutComments(validateSql(getText(), "insert\\s+into\\s+", "Inserts"))
+	then
+		String errorMessage = "INSERT found for non-permitted table in the Sql Script (" + woc.getSqlFile().getName() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+
+rule "MERGE found for non-permitted table"
+    salience 1
+	when
+		woc : WithoutComments(validateSql(getText(), "merge\\s+into\\s+", "Merges"))
+	then
+		String errorMessage = "MERGE found for non-permitted table in the Sql Script (" + woc.getSqlFile().getName() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+
+rule "UPDATE found for non-permitted table"
+    salience 1
+	when
+		woc : WithoutComments(validateSql(getText(), "update\\s+", "Updates"))
+	then
+		String errorMessage = "UPDATE found for non-permitted table in the Sql Script (" + woc.getSqlFile().getName() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+	
+rule "DELETE found for non-permitted table"
+    salience 1
+	when
+		woc : WithoutComments(validateSql(getText(), "delete\\s+from\\s+", "Deletes"))
+	then
+		String errorMessage = "DELETE found for non-permitted table in the Sql Script (" + woc.getSqlFile().getName() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+
+
