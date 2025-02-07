@@ -1,0 +1,81 @@
+/*
+@author Liquibase
+@version 1.0
+@date Feb 6, 2025
+@description fail if stored logic scripts contain multiple objects
+
+Copyright (c) 2025 Liquibase, Inc. All Rights Reserved.
+
+Sample Passing Script
+-------------------------------------------------------------------------------
+create view dbo.product_02_vw AS
+select id from dbo.product_02;
+GO
+
+Sample Failing Script
+-------------------------------------------------------------------------------
+drop view dbo.product_02_vw; 
+GO
+
+create view dbo.product_02_vw AS
+select name from dbo.product_02;
+GO
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add script to Rules -> SqlRules folder.
+2) To test outside of pacakger run: hammer runRules <path to script or folder>.
+   This rule only runs in folders specifically named function, procedure, trigger, or view. 
+
+*/
+
+// ******************************* Packages ****************************************
+package com.datical.hammer.core.sqlrules.SingleObjectInStoredLogicFolders;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/* @return true if script contain the functions listed; false otherwise */
+function boolean validateSql(String sql, String scriptPath)
+{
+	System.out.println("Validation called: SingleObjectInStoredLogicFolders");
+
+	//System.out.println("Script Path: " + scriptPath);
+	//System.out.println("SQL = " + sql);
+	
+	final String scriptPathRegex = "\\b(function|procedure|trigger|view)\\b";
+	Pattern scriptPathP = Pattern.compile(scriptPathRegex, Pattern.CASE_INSENSITIVE);
+	Matcher scriptPathM = scriptPathP.matcher(scriptPath);
+	
+	while (scriptPathM.find()) {
+	  
+		final String regex = "^\\s*(alter|create|drop)\\s*";
+		Pattern p = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+		Matcher m = p.matcher(sql);
+		
+		int matchCount = 0;
+		while (m.find()) {
+		    matchCount++;	
+		}
+		//System.out.println("Match Count = " + matchCount);
+		if (matchCount > 1) {
+			return true;
+		}
+	} 
+	return false;
+	
+}
+
+/***********************************************************************/
+rule "Stored Logic Script contains multiple create, alter, or drop object statements"
+    when
+        woc : WithoutComments(validateSql(getText().toUpperCase(), getSqlFile().toString()))
+    then
+        String errorMessage = "Sql script (" + woc.getSqlFile().getName() + ") contains multiple create, alter, or drop object statements. Use sql_direct folder.";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+    end
