@@ -54,7 +54,7 @@ function boolean validateSql(String sql, String scriptPath)
 	
 	while (scriptPathM.find()) {
 	  
-		final String regex = "^(alter|create|drop)\\s*";
+		final String regex = "^\\s*(alter|create|drop)\\s*";
 		Pattern p = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
 		Matcher m = p.matcher(sql);
 		
