@@ -25,7 +25,7 @@ Instructions
 -------------------------------------------------------------------------------
 1) Add script to Rules -> SqlRules folder.
 2) To test outside of pacakger run: hammer runRules <path to script or folder>.
-   This rule only runs in folders specifically named function, package, packagebody, procedure, trigger, or view. 
+   This rule only runs in folders specifically named function, procedure, trigger, or view. 
 
 */
 
@@ -48,7 +48,7 @@ function boolean validateSql(String sql, String scriptPath)
 	//System.out.println("Script Path: " + scriptPath);
 	//System.out.println("SQL = " + sql);
 	
-	final String scriptPathRegex = "\\b(function|package|packagebody|procedure|trigger|view)\\b";
+	final String scriptPathRegex = "\\b(function|procedure|trigger|view)\\b";
 	Pattern scriptPathP = Pattern.compile(scriptPathRegex, Pattern.CASE_INSENSITIVE);
 	Matcher scriptPathM = scriptPathP.matcher(scriptPath);
 	
@@ -72,7 +72,7 @@ function boolean validateSql(String sql, String scriptPath)
 }
 
 /***********************************************************************/
-rule "SQL Script contains multiple create, alter, or drop object statements"
+rule "Stored Logic Script contains multiple create, alter, or drop object statements"
     when
         woc : WithoutComments(validateSql(getText().toUpperCase(), getSqlFile().toString()))
     then
