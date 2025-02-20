@@ -1,0 +1,69 @@
+/*
+@author Liquibase
+@version 1.0
+@date 2/20/2025
+@description Error if SQL script contains public database links in dml 
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws ERROR when a sql script contains public database links in dml.
+
+List of syntax to prevent:
+-- insert, update, delete, or merge statements into table@database_link values ....
+
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+package com.datical.hammer.core.sqlrules.NoPublicDblinksInDML
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.io.File;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+// ************************************* Models *************************************
+
+/* @return false if validation fails; true otherwise */
+function boolean validateSql(String sql, String scriptPath) {
+	
+	System.out.println("Validation called: NoPublicDblinksInDML");
+	//System.out.println("Script Path: " + scriptPath);
+	
+	final String regex = "\\\\data_dml\\\\|\\/data_dml\\/";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(scriptPath);
+	
+	while (matcher.find()) {
+	  
+	  //System.out.println("SQL: " + sql);
+	  
+	  final String dmlRegex = "(insert\\s*into|delete\\s*from|merge\\s*into|update)\\s*\\w+@\\w+\\s*";
+	  final Pattern dmlPattern = Pattern.compile(dmlRegex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+	  final Matcher dmlMatcher = dmlPattern.matcher(sql);
+	  
+	  while (dmlMatcher.find()) {
+	    return true;
+	  } 
+	  
+	  return false;
+    }
+	return false;
+}
+
+rule "PUBLIC database links are not allowed in DML statements."
+    salience 1
+	when
+		woc : WithoutComments(validateSql(getText().toUpperCase(), getSqlFile().toString()))
+	then
+		String errorMessage = "PUBLIC database links are not allowed in the Sql Script (" + woc.getSqlFile() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));	
+	end
