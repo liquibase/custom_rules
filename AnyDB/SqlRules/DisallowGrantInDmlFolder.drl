@@ -1,0 +1,78 @@
+/*
+@author Liquibase
+@version 1.1
+@date 2025-02-27
+@description Error if SQL script contains 'GRANT'
+
+Version 1.1: Addresses issue with "grant " statement being present in Data DML scripts.
+
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws ERROR when a sql script contains 'GRANT'.
+
+List of syntax to prevent:
+--GRANT <privilege> ON <object>
+--GRANT <role> TO <grantee>
+
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+package com.datical.hammer.core.sqlrules.Grant
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.io.File;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+// ************************************* Models *************************************
+
+/* @return false if validation fails; true otherwise */
+function boolean validateSql(String sql, String scriptPath) {
+	
+	System.out.println("Validation called: Grant");
+	//System.out.println("Script Path: " + scriptPath);
+	
+	final String regex = "\\\\data_dml\\\\|\\/data_dml\\/";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(scriptPath);
+	
+	while (matcher.find()) {	  
+		//System.out.println("SQL: " + sql);
+	  
+		// Split statements on ; so that the grant statements cannot be included after another statement. 
+		String[] sqlTokens = sql.split(";");
+	  
+		for (String sqlToken : sqlTokens) {
+		
+		    //System.out.println("SQL Token: " + sqlToken);
+	  
+			final String dmlRegex = "^\\s*grant\\s*.*(on|to)";
+			final Pattern dmlPattern = Pattern.compile(dmlRegex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+			final Matcher dmlMatcher = dmlPattern.matcher(sqlToken);
+	  
+			while (dmlMatcher.find()) {
+				return true;
+			} 
+		}
+	}
+	return false;
+}
+
+rule "GRANTS are not allowed in the sql file"
+    salience 1
+	when
+		woc : WithoutComments(validateSql(getText().toUpperCase(), getSqlFile().toString()))
+	then
+		String errorMessage = "GRANTS are not allowed in the Sql Script (" + woc.getSqlFile() + "). Please check for potential issues on lines: " + woc.getLineNumbers("GRANT ");
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));	
+	end
