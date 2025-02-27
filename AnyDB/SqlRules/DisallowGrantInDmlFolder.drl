@@ -56,7 +56,7 @@ function boolean validateSql(String sql, String scriptPath) {
 		
 		    //System.out.println("SQL Token: " + sqlToken);
 	  
-			final String dmlRegex = "(?s)^\\s*grant\\s*.*(on|to)";
+			final String dmlRegex = "(?s)^\\s*grant\\s+.*?(on|to)";
 			final Pattern dmlPattern = Pattern.compile(dmlRegex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
 			final Matcher dmlMatcher = dmlPattern.matcher(sqlToken);
 	  
