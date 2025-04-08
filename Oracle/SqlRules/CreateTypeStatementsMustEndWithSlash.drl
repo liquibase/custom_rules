@@ -1,7 +1,7 @@
 /*
 @author Liquibase
 @version 1.0
-@date July 26, 2024
+@date 4/8/2025
 @description Oracle CREATE (OR REPLACE) TYPE statements must terminate with "/" character.
 
 Copyright (c) 2024 Liquibase, Inc. All Rights Reserved.
@@ -42,7 +42,6 @@ import com.datical.hammer.core.rules.Response;
 import com.datical.hammer.core.rules.Response.ResponseType;
 import com.datical.hammer.core.rules.WithComments;
 import com.datical.hammer.core.rules.WithoutComments;
-import com.datical.hammer.core.forecast.rules.RuleFunctions;
 
 
 /* @return false if validation fails; true otherwise */
@@ -50,30 +49,24 @@ function boolean validateTerminator(String sql)
 {
     System.out.println("Validation called: Create Type Terminator");
 	
-	String newline = System.getProperty("line.separator");
+	// System.out.println("SQL: " + sql);
 	
-	//System.out.println("SQL: " + sql);
+	// Regex is checking for a CREATE (OR REPLACE) TYPE .... ; statement.
+	// It additionally pulls in Matcher Group 2 which needs to be a "/" character.
 	
-    sql = "\n" + sql + "\n";
-	sql = sql.trim();
-	
-	// Check if script contains create type
-	final String regex = "(create|replace)\\s*type";
-	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+	final String regex = "create\\s+(or\\s+replace\\s+|)type\\s+.*?;\\s*(.)";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     final Matcher matcher = pattern.matcher(sql);
 	
 	while (matcher.find()) {
-
-      char lastChar = sql.charAt(sql.length() - 1);
-	  //System.out.println("Create Type statement found. Last character is: [" + lastChar + "]");
-      
-	  if (lastChar != '/') {	      
-		  return true;
-	  } else {
-		  return false;
-	  }
-    }
+	
+		// Matcher Group 0 will be the CREATE TYPE statement.
+		// Matcher Group 2 should be the "/" character.
 		
+		if (!(matcher.group(2)).equals("/")) {
+			return true;
+		}		
+    }
     return false;
 }
 
