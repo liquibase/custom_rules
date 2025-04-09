@@ -1,0 +1,67 @@
+/*
+@author Liquibase
+@version 1.0
+@date 4/9/2025
+@description This issue has been fixed in DAT-13014 as "Comment at end of file causes DatabaseException for sqlfile folder deployments using DB2 LUW"
+
+Copyright (c) 2025 Liquibase, Inc. All Rights Reserved.
+
+Sample Passing Script
+-------------------------------------------------------------------------------
+INSERT INTO employee (id, name, jobrole) VALUES
+(31,'Ryan Gosling','Actor');
+
+
+Sample Failing Script
+-------------------------------------------------------------------------------
+INSERT INTO employee (id, name, jobrole) VALUES
+(31,'Ryan Gosling','Actor');
+
+--End Script
+
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add script to Rules -> SqlRules folder.
+2) To test outside of pacakger run: hammer runRules <path to script or folder> 
+
+*/
+
+package com.datical.hammer.core.sqlrules.TrailingComments
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+
+/* @return false if validation fails; true otherwise */
+function boolean validateSql(String sql)
+{
+    System.out.println("Validation called: Trailing Comments");
+	
+	// System.out.println("SQL: " + sql);
+	
+	String[] lines = sql.split("\\R"); // Splits by any line break (Windows, Linux, Mac)
+	String lastLine = lines.length > 0 ? lines[lines.length - 1] : "";
+	lastLine = lastLine.stripLeading();
+	
+	// System.out.println("lastLine: " + lastLine);
+	
+	if (lastLine != null && lastLine.startsWith("--")) {
+		return true;
+	} 
+	return false;
+}
+
+rule "Remove Trailing Comments from script"
+when
+		wc : WithComments(validateSql(getText()))
+then
+		String errorMessage = "Scripts cannot end with a -- comment prior to Liquibase Enterprise version 8.4. Remove trailing comment in Sql Script (" + wc.getSqlFile().getName() + ")";  
+		insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+end
