@@ -29,9 +29,6 @@ Instructions
 
 package com.datical.hammer.core.sqlrules.TrailingComments
 
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 import com.datical.db.project.Project;
 import com.datical.hammer.core.rules.Response;
 import com.datical.hammer.core.rules.Response.ResponseType;
