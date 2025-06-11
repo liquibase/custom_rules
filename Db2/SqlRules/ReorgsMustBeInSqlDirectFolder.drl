@@ -1,0 +1,66 @@
+/*
+@author Liquibase
+@version 1.0
+@date 6/10/2025
+@description Check that REORG TABLE statements are in sql_direct folder.
+
+Copyright (c) 2025 Liquibase, Inc. All Rights Reserved.
+
+Overview
+-------------------------------------------------------------------------------
+This is a SQL Rule to ensure that any REORG TABLE statements can only be present in sql_direct folder.
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add script to Rules -> SqlRules folder.
+2) To test outside of pacakger run: hammer runRules <path to script or folder> 
+
+*/
+
+package com.datical.hammer.core.sqlrules.ReorgInSqlDirect
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.io.File;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+/* @return true if REORG TABLE is found and folder is not sql_direct (validation fails); false otherwise */
+function boolean validateSql(String sql, String scriptPath) {
+	
+	System.out.println("Validation called: ReorgInSqlDirect");
+	//System.out.println("Script Path: " + scriptPath);
+	
+	final String regex = "reorg\\s+table";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(sql);
+	
+	while (matcher.find()) {
+		    
+			final String pathRegex = "sql_direct\\\\|sql_direct\\/";
+			final Pattern pathPattern = Pattern.compile(pathRegex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+			final Matcher pathMatcher = pathPattern.matcher(scriptPath);
+	  
+			while (pathMatcher.find()) {
+				return false;
+			}
+            return true;			
+	}
+	return false;
+}
+
+rule "REORG TABLE statements must be in sql_direct folder"
+	when
+		woc : WithoutComments(validateSql(getText().toLowerCase(), getSqlFile().toString()))
+	then
+		String errorMessage = "REORG TABLE statements must be moved to sql_direct folder. Sql Script (" + woc.getSqlFile() + "). Line(s): " + woc.getLineNumbers("reorg");
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));	
+	end
+
+
