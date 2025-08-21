@@ -1,0 +1,104 @@
+/*
+@author Liquibase
+@version 1.0
+@date Aug 21,2025
+@description Error if sql script contains DML on a table not in the permitted_tables_list.txt file
+
+Copyright (c) 2025 Liquibase, Inc. All Rights Reserved.
+
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add this rule script and permitted_tables_list.txt to Rules -> SqlRules folder.
+2) To test outside of packager run: hammer runRules <path to sql script or folder> 
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws ERROR when a SQL script contains an INSERT, UPDATE, MERGE, or DELETE for a table not specified in the permitted_tables_list.txt allowlist.
+If permitted_tables_list.txt is not present, ERROR is also thrown.
+
+Script assumes that schema names ARE included in the SQL script.
+
+To execute this rule outside of packaging/forecasting, use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+package com.datical.hammer.core.sqlrules.java
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.util.Scanner;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import com.datical.hammer.core.rules.WithoutComments;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+
+/***********************************************************  Rules  *************************************************************/
+
+/* @return false if validation fails; true otherwise */
+function boolean onlyAllowedTablesExist(String sql) {
+    System.out.println("Validation called: Check that DML is in allowlist permitted_tables_list.txt");
+
+    //Name of the file with stop statements which will halt processing and throw an error
+    String stopStatementFilename = "permitted_tables_list.txt";
+    String pathToFile = System.getProperty("user.dir") + "/Rules/SqlRules/" + stopStatementFilename;
+    System.out.println("Loading allowed tables file = " + pathToFile);
+
+    //Remove leading and trailing spaces
+    sql = sql.trim();
+
+    //If there is no content to be checked, return true
+    if (sql.length() == 0) return true;
+
+        //Replace various line ending styles and white spaces with a single space, then remove multiple spaces
+        sql = sql.replaceAll("\\r\\n|\\r|\\n"," ")
+                .replaceAll("\t"," ")
+                .replaceAll("\\s+"," ");
+
+    try {
+        //We'll read the allowed tables from an external text file that requires some preparation.
+
+        //Open the file with all the stop statements
+        File stopStatementsFile = new File(pathToFile);
+        Scanner statementsScan = new Scanner(stopStatementsFile);
+        while (statementsScan.hasNextLine()) {
+            String stopStatement = statementsScan.nextLine();
+            if (!stopStatement.isEmpty()) {
+
+                //Create the forbidden DML pattern
+                String schemaRegex = "(((insert)(\\s+)(into)(\\s+)|(delete)(\\s+)(from)(\\s+)|(merge)(\\s+)(into)(\\s+)|(update\\s+)))";
+                final Pattern pattern = Pattern.compile(schemaRegex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+                final Matcher matcher = pattern.matcher(sql);
+                if (matcher.find()) {
+
+                    //Now check if match is on the allowed table list
+                    String tableRegex = "(((insert)(\\s+)(into)(\\s+)|(delete)(\\s+)(from)(\\s+)|(merge)(\\s+)(into)(\\s+)|(update\\s+))" + stopStatement + "(\\s+))";
+                    final Pattern allowPattern = Pattern.compile(tableRegex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+                    final Matcher allowMatcher = allowPattern.matcher(sql);
+
+                    //If the match is not in the allowed table list, return false to fail rule
+                    if (!allowMatcher.find()) {
+                        return false;
+                    };
+                }
+            }
+        }
+        statementsScan.close();
+    } catch (FileNotFoundException e) {
+        System.out.println("An error occurred reading the allowed tables file: " + stopStatementFilename);
+        e.printStackTrace();
+    }
+    return true;
+}
+
+rule "PermittedDMLfromList"
+when
+		woc : WithoutComments(!onlyAllowedTablesExist(getText().toLowerCase()))
+then
+		String errorMessage = "SQL script contains DML on a non-allowed table. (Script: " + woc.getSqlFile().toString() + ")";
+		insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+end
