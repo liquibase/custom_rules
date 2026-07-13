@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Datical, Inc. All Rights Reserved.
+// Copyright (c) 2026 Liquibase, Inc. All Rights Reserved.
 /*
 @author Liquibase
 @version 1.1
@@ -7,7 +7,7 @@
 */
 /*
 README: 
-This is a SQL Rule which throws a WARNING when a sql script has a CTAS statement without a WHERE clause.
+This is a SQL Rule which throws a WARNING when a sql script has a CTAS (CREATE TABLE AS SELECT) statement without a WHERE clause.
 To Execute this rule use:
 hammer runRules [SQL file | SQL files folder]
 
