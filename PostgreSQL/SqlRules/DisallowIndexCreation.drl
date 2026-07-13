@@ -1,0 +1,57 @@
+/*
+@author Liquibase
+@version 1.0
+@date July 7, 2025
+@description Error if SQL script contains index creation.
+@database PostgreSQL
+
+Copyright (c) 2025 Liquibase, Inc. All Rights Reserved.
+
+Sample Failing Script
+-------------------------------------------------------------------------------
+CREATE UNIQUE INDEX title_idx ON films_01 (title);
+
+Instructions
+-------------------------------------------------------------------------------
+1) Add script to Rules -> SqlRules folder for PostgreSQL projects.
+2) To test outside of pacakger run: hammer runRules <path to script or folder> 
+
+*/
+
+package com.datical.hammer.core.sqlrules.DisallowIndexCreation
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+function boolean validateSql(String sql) {
+    System.out.println("Validation called: IndexCreation");
+	
+	final String regex = "\\bCREATE\\s+(UNIQUE\\s+)?INDEX\\b";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(sql);
+	
+	while (matcher.find()) {
+	  return true;
+    }
+	return false;
+}
+
+rule "Index Creation is not allowed in sql scripts"
+    salience 1
+	when
+		woc : WithoutComments(validateSql(getText().toUpperCase()))
+	then
+		String errorMessage = "CREATE INDEX is not allowed in the Sql Script (" + woc.getSqlFile().getName() + ") on lines: " + woc.getLineNumbers("index");
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+
+
