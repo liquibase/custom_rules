@@ -30,7 +30,7 @@ Version 1.1:
 - Added diagnostic output (console + log, see below) showing the starting
   text of each offending statement.
 */
-package com.datical.hammer.core.sqlrules
+package com.datical.hammer.core.sqlrules.RestrictCreateAlterDrop
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import com.datical.db.project.Project;
@@ -139,7 +139,7 @@ function void reportDdlWithoutEditOwnerLocations(String sql, String fileName) {
 	String sqlToScan = stripStringLiterals(sql);
 	int n = sqlToScan.length();
 
-	final Pattern ddlPattern = Pattern.compile("(create|alter|drop)(\\s)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+	final Pattern ddlPattern = Pattern.compile("\\b(create|alter|drop)\\b", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 	final Pattern editOwnerPattern = Pattern.compile("(create|alter|drop)(\\s)([^;]+)(edit_owner)([.])", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 
 	int stmtStart = 0;
@@ -184,7 +184,7 @@ function void reportDdlWithoutEditOwnerLocations(String sql, String fileName) {
  */
 function boolean ddl_found(String sql) {
 	String sqlToScan = stripStringLiterals(sql);
-	final Pattern pattern = Pattern.compile("(create|alter|drop)(\\s)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+	final Pattern pattern = Pattern.compile("\\b(create|alter|drop)\\b", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 
 	int n = sqlToScan.length();
 	int stmtStart = 0;
@@ -218,7 +218,7 @@ function boolean ddl_without_edit_owner(String sql) {
     System.out.println("Validation called: Restrict Create/Alter/Drop");
 
 	String sqlToScan = stripStringLiterals(sql);
-	final Pattern ddlPattern = Pattern.compile("(create|alter|drop)(\\s)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+	final Pattern ddlPattern = Pattern.compile("\\b(create|alter|drop)\\b", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 	final Pattern editOwnerPattern = Pattern.compile("(create|alter|drop)(\\s)([^;]+)(edit_owner)([.])", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 
 	int n = sqlToScan.length();
