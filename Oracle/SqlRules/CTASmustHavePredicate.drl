@@ -16,7 +16,7 @@ aware) before scanning, so text field values (e.g. a description column
 containing words like "create"/"table"/"select"/"where") aren't mistaken
 for SQL. Same helper used in the CheckProjectSchemas rule.
 */
-package com.datical.hammer.core.sqlrules
+package com.datical.hammer.core.sqlrules.CTASmustHavePredicate
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import com.datical.db.project.Project;
