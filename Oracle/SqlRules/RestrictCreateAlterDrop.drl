@@ -1,0 +1,256 @@
+// Copyright (c) 2026 Liquibase, Inc. All Rights Reserved.
+/*
+@author Liquibase
+@version 1.1
+@date 13-Jul-2026
+@description Error if CREATE/ALTER/DROP statements outside of the EDIT_OWNER schema.
+*/
+/*
+README: 
+This is a SQL Rule which throws a ERROR if a script tries to CREATE/ALTER/DROP objects outside the EDIT_OWNER schema.
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+Version 1.1:
+- Strips quoted string literal contents (Oracle-style, dynamic-SQL aware)
+  before scanning, so a text/description value containing words like
+  "create"/"alter"/"drop" isn't mistaken for DDL.
+- Made both ddl_found and ddl_without_edit_owner statement-scoped (split on
+  top-level ';') instead of scanning the whole file in one matcher.find()
+  loop. Previously, as soon as ANY compliant DDL statement existed anywhere
+  in the file (i.e. referencing edit_owner.), the whole-file search would
+  find that match and return "no violation" for the ENTIRE file, silently
+  clearing a genuine violation in a DIFFERENT, non-compliant DDL statement
+  elsewhere in the same file. Example that reproduced this:
+    CREATE TABLE customer_data (id NUMBER);
+    CREATE TABLE edit_owner.audit_log (id NUMBER);
+  The first statement has no edit_owner reference and should fail, but the
+  old whole-file search matched on the second (compliant) statement instead
+  and returned no violation for the file.
+- Added diagnostic output (console + log, see below) showing the starting
+  text of each offending statement.
+*/
+package com.datical.hammer.core.sqlrules.RestrictCreateAlterDrop
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+/***********************************************************  Rules  *************************************************************/
+
+/*
+ * Strips single-quoted SQL string literal contents so they are not scanned
+ * as SQL. Handles Oracle-style doubled single quotes ('') as escaped quotes,
+ * and is aware of EXECUTE IMMEDIATE dynamic SQL, where the real SQL command
+ * is itself built as a string literal via concatenation.
+ *
+ * Known limitation: only triggers off the literal keyword "EXECUTE IMMEDIATE"
+ * appearing before the string. Dynamic SQL built into a variable earlier and
+ * executed later (v_sql := '...'; ... EXECUTE IMMEDIATE v_sql;) won't be
+ * recognized as code, and the literal will be treated as an ordinary value
+ * (fully masked). Also does not handle alternative Oracle quoting (q'[...]').
+ */
+function String stripStringLiterals(String sql) {
+	StringBuilder out = new StringBuilder(sql.length());
+	int n = sql.length();
+	int i = 0;
+	boolean inDynamicSqlChain = false;
+	boolean dataMode = true;
+	String upper = sql.toUpperCase();
+	String KEYWORD = "EXECUTE IMMEDIATE";
+	int keywordLen = KEYWORD.length();
+
+	while (i < n) {
+		String c = sql.substring(i, i + 1);
+
+		if (c.equals("'")) {
+			if (!inDynamicSqlChain) {
+				dataMode = true;
+			}
+			out.append("'");
+			i = i + 1;
+			while (i < n) {
+				String lc = sql.substring(i, i + 1);
+				if (lc.equals("'")) {
+					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
+						dataMode = !dataMode;
+						out.append("''");
+						i = i + 2;
+						continue;
+					} else {
+						out.append("'");
+						i = i + 1;
+						break;
+					}
+				} else {
+					if (dataMode) {
+						// preserve whitespace so masked data doesn't collapse into one
+						// long non-whitespace run, which slows regex matching below
+						if (lc.equals(" ") || lc.equals("\t") || lc.equals("\n") || lc.equals("\r")) {
+							out.append(lc);
+						} else {
+							out.append("x");
+						}
+					} else {
+						out.append(lc);
+					}
+					i = i + 1;
+				}
+			}
+			continue;
+		}
+
+		if (!inDynamicSqlChain && i + keywordLen <= n
+				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+			inDynamicSqlChain = true;
+			dataMode = false;
+			out.append(sql.substring(i, i + keywordLen));
+			i = i + keywordLen;
+			continue;
+		}
+
+		if (inDynamicSqlChain && c.equals(";")) {
+			inDynamicSqlChain = false;
+		}
+
+		out.append(c);
+		i = i + 1;
+	}
+
+	return out.toString();
+}
+
+/*
+ * Diagnostic only -- does not affect the FAIL/no-FAIL decision, which comes
+ * from ddl_found / ddl_without_edit_owner below. Prints (to both console and
+ * the deployPackager logger, so it also lands in daticaldb.log) the START OF
+ * THE STATEMENT TEXT -- not a line number, since WithoutComments() has
+ * already stripped comments before this text arrives, making line counts
+ * inaccurate -- for each DDL statement missing an edit_owner reference.
+ *
+ * Uses the same statement-scoped splitting as ddl_found / ddl_without_edit_owner
+ * below, so its output is consistent with why the rule did or didn't fire.
+ */
+function void reportDdlWithoutEditOwnerLocations(String sql, String fileName) {
+	String sqlToScan = stripStringLiterals(sql);
+	int n = sqlToScan.length();
+
+	final Pattern ddlPattern = Pattern.compile("\\b(create|alter|drop)\\b", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+	final Pattern editOwnerPattern = Pattern.compile("(create|alter|drop)(\\s)([^;]+)(edit_owner)([.])", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
+	int stmtStart = 0;
+	int maxSnippetLen = 80;
+
+	while (stmtStart <= n) {
+		int semiIdx = sqlToScan.indexOf(";", stmtStart);
+		int stmtEnd = (semiIdx == -1) ? n : semiIdx;
+
+		if (stmtEnd > stmtStart) {
+			String statement = sqlToScan.substring(stmtStart, stmtEnd);
+			Matcher ddlMatcher = ddlPattern.matcher(statement);
+			if (ddlMatcher.find()) {
+				Matcher editOwnerMatcher = editOwnerPattern.matcher(statement);
+				if (!editOwnerMatcher.find()) {
+					String snippet = statement.trim().replaceAll("\\s+", " ");
+					if (snippet.length() > maxSnippetLen) {
+						snippet = snippet.substring(0, maxSnippetLen) + "...";
+					}
+					Logger log = LoggerFactory.getLogger("deployPackager");
+					String diagnosticMessage = "RestrictCreateAlterDrop: possible CREATE/ALTER/DROP outside EDIT_OWNER starting with: \""
+							+ snippet + "\" in file " + fileName;
+					System.out.println(diagnosticMessage);
+					log.info(diagnosticMessage);
+				}
+			}
+		}
+
+		if (semiIdx == -1) {
+			break;
+		}
+		stmtStart = stmtEnd + 1;
+	}
+}
+
+/*
+ * @return true if a CREATE/ALTER/DROP statement is found ANYWHERE in the file.
+ *
+ * Statement-scoped: splits on top-level ';' (safe after stripStringLiterals,
+ * since masked data literals no longer contain stray semicolons) and checks
+ * each statement individually.
+ */
+function boolean ddl_found(String sql) {
+	String sqlToScan = stripStringLiterals(sql);
+	final Pattern pattern = Pattern.compile("\\b(create|alter|drop)\\b", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
+	int n = sqlToScan.length();
+	int stmtStart = 0;
+	while (stmtStart <= n) {
+		int semiIdx = sqlToScan.indexOf(";", stmtStart);
+		int stmtEnd = (semiIdx == -1) ? n : semiIdx;
+		if (stmtEnd > stmtStart) {
+			String statement = sqlToScan.substring(stmtStart, stmtEnd);
+			Matcher matcher = pattern.matcher(statement);
+			if (matcher.find()) {
+				return true;
+			}
+		}
+		if (semiIdx == -1) {
+			break;
+		}
+		stmtStart = stmtEnd + 1;
+	}
+	return false;
+} 
+
+/*
+ * @return true if AT LEAST ONE CREATE/ALTER/DROP statement in the file
+ * references something outside the EDIT_OWNER schema.
+ *
+ * Statement-scoped for the same reason as ddl_found above -- see the
+ * version-1.1 changelog comment at the top of this file for the false
+ * negative this fixes.
+ */
+function boolean ddl_without_edit_owner(String sql) {
+    System.out.println("Validation called: Restrict Create/Alter/Drop");
+
+	String sqlToScan = stripStringLiterals(sql);
+	final Pattern ddlPattern = Pattern.compile("\\b(create|alter|drop)\\b", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+	final Pattern editOwnerPattern = Pattern.compile("(create|alter|drop)(\\s)([^;]+)(edit_owner)([.])", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
+	int n = sqlToScan.length();
+	int stmtStart = 0;
+	while (stmtStart <= n) {
+		int semiIdx = sqlToScan.indexOf(";", stmtStart);
+		int stmtEnd = (semiIdx == -1) ? n : semiIdx;
+		if (stmtEnd > stmtStart) {
+			String statement = sqlToScan.substring(stmtStart, stmtEnd);
+			Matcher ddlMatcher = ddlPattern.matcher(statement);
+			if (ddlMatcher.find()) {
+				Matcher editOwnerMatcher = editOwnerPattern.matcher(statement);
+				if (!editOwnerMatcher.find()) {
+					return true;
+				}
+			}
+		}
+		if (semiIdx == -1) {
+			break;
+		}
+		stmtStart = stmtEnd + 1;
+	}
+	return false;
+} 
+rule "RestrictCreateAlterDrop"
+    salience 1
+	when
+		ddl : WithoutComments(ddl_found(getText()))
+		ddl_not_edit_owner : WithoutComments(ddl_without_edit_owner(getText()))
+	then
+		reportDdlWithoutEditOwnerLocations(ddl_not_edit_owner.getText(), ddl_not_edit_owner.getSqlFile().toString());
+		String errorMessage = "CREATE/ALTER/DROP can only be performed on objects in the EDIT_OWNER schema. (Script: " + ddl.getSqlFile().toString() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
