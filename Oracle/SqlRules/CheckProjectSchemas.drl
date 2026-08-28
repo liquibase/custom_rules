@@ -1,0 +1,242 @@
+// Copyright (c) 2026 Liquibase, Inc. All Rights Reserved.
+
+/*
+@author Liquibase
+@version 1.1
+@date 07-Jul-2026
+@description ERROR if SQL script references a schema outside Project file
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws ERROR when a sql script references a schema outside Project file
+To Execute this rule use:
+hammer runRules [dbDef] [SQL file | SQL files folder]
+
+Version 1.1:
+Modified to exclude quoted string literals from schema scan (unless EXECUTE IMMEDIATE string literal.)
+Example of false positive that is now corrected:
+UPDATE test_table SET description = 'Escalate any failures to system.' WHERE id = 10;
+
+This version strips single-quoted string literal contents (Oracle-style,
+including doubled '' as an escaped quote) out of the SQL text BEFORE running
+the schema regex, so text field values are no longer scanned.
+
+Prints a diagnostic line (via System.out.println) for EACH unmanaged schema
+reference found.
+*/
+
+package com.datical.hammer.core.sqlrules.CheckProjectSchemas
+
+
+import com.datical.db.project.Project;
+import com.datical.db.project.Schema;
+import com.datical.db.project.DatabaseDef;
+import com.datical.dbsim.model.DbModel;
+import com.datical.db.project.Plan;
+import java.util.regex.*;
+import com.datical.db.project.util.ProjectUtil;
+import java.util.*;
+import com.google.common.collect.Iterables;
+import liquibase.database.Database;
+import com.datical.hammer.core.liquibase.status.LiquibaseAPIUtils;
+import com.datical.hammer.core.connectionservice.DatabaseBuilder;
+import java.sql.Connection;
+import com.datical.hammer.core.rules.ProjectResources;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+import com.datical.hammer.core.DatabaseDefUtil;
+import com.datical.hammer.core.extensions.DBOperations;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+
+/***********************************************************  Rules  *************************************************************/
+
+/*
+ * Strips single-quoted SQL string literal contents so they are not scanned
+ * for schema references. Handles Oracle-style doubled single quotes ('')
+ * as escaped quotes within a literal.
+ *
+ * Should still take into account 
+ *   EXECUTE IMMEDIATE
+ *     'UPDATE schema.tbl SET description = ''some value ' || i || '.'' WHERE id = ' || i;
+ *
+ * Known limitation: only triggers off the literal keyword "EXECUTE IMMEDIATE"
+ * appearing before the string. Dynamic SQL built into a variable earlier and
+ * executed later (v_sql := '...'; ... EXECUTE IMMEDIATE v_sql;) won't be
+ * recognized as code, and the literal will be treated as an ordinary value
+ * (fully masked). Also does not handle alternative Oracle quoting (q'[...]').
+ */
+function String stripStringLiterals(String sql) {
+	StringBuilder out = new StringBuilder(sql.length());
+	int n = sql.length();
+	int i = 0;
+	boolean inDynamicSqlChain = false;
+	boolean dataMode = true;
+	String upper = sql.toUpperCase();
+	String KEYWORD = "EXECUTE IMMEDIATE";
+	int keywordLen = KEYWORD.length();
+
+	while (i < n) {
+		String c = sql.substring(i, i + 1);
+
+		if (c.equals("'")) {
+			if (!inDynamicSqlChain) {
+				dataMode = true;
+			}
+			out.append("'");
+			i = i + 1;
+			while (i < n) {
+				String lc = sql.substring(i, i + 1);
+				if (lc.equals("'")) {
+					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
+						dataMode = !dataMode;
+						out.append("''");
+						i = i + 2;
+						continue;
+					} else {
+						out.append("'");
+						i = i + 1;
+						break;
+					}
+				} else {
+					if (dataMode) {
+				        // preserve whitespace so masked data doesn't collapse into one
+						// long non-whitespace run, which slows the schema regex below
+						if (lc.equals(" ") || lc.equals("\t") || lc.equals("\n") || lc.equals("\r")) {
+							out.append(lc);
+						} else {
+							out.append("x");
+						}
+					} else {
+						out.append(lc);
+					}
+					i = i + 1;
+				}
+			}
+			continue;
+		}
+
+		if (!inDynamicSqlChain && i + keywordLen <= n
+				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+			inDynamicSqlChain = true;
+			dataMode = false;
+			out.append(sql.substring(i, i + keywordLen));
+			i = i + keywordLen;
+			continue;
+		}
+
+		if (inDynamicSqlChain && c.equals(";")) {
+			inDynamicSqlChain = false;
+		}
+
+		out.append(c);
+		i = i + 1;
+	}
+
+	return out.toString();
+}
+
+/*
+ * Returns the text of the SQL statement enclosing a given match position,
+ * bounded by the nearest top-level ';' before matchStart and after matchEnd.
+ * Used only to build a human-readable diagnostic snippet; not used for the
+ * FAIL/no-FAIL decision itself.
+ */
+function String extractEnclosingStatement(String sqlToScan, int matchStart, int matchEnd) {
+	int stmtStart = sqlToScan.lastIndexOf(";", matchStart);
+	stmtStart = (stmtStart == -1) ? 0 : stmtStart + 1;
+	int stmtEnd = sqlToScan.indexOf(";", matchEnd);
+	stmtEnd = (stmtEnd == -1) ? sqlToScan.length() : stmtEnd;
+	return sqlToScan.substring(stmtStart, stmtEnd);
+}
+
+/* @return false if validation fails; true otherwise */
+function boolean validateSql(String sql, Project project, DBOperations operations, String regex, String fileName) {
+    
+	System.out.println("Validation called: CheckProjectSchemas");
+	List<String> availableSchemas = getAvailableSchemas(project, operations);
+	List<String> availableSchemasList =  new ArrayList<>();
+
+	for(String schema : availableSchemas) {
+		availableSchemasList.add(schema.toLowerCase());
+	}
+	boolean nonManagedSchemaFound = false;
+    List<String> schemaStringList = new ArrayList<>();
+    for (Schema schema : project.getSchemas()) {
+      schemaStringList.add(schema.getName().toLowerCase().replaceAll("\\$\\{.*\\}.",""));
+    }
+	// System.out.println("Available schemas size:"+availableSchemasList.size());
+	// System.out.println("Assigned schemas size:"+schemaStringList.size());
+
+	// Strip quoted string literal contents before scanning,
+	// so text/description/comment field VALUES are not treated as SQL identifiers,
+	// while still scanning the real SQL command text embedded in dynamic
+	// EXECUTE IMMEDIATE constructions.
+	String sqlToScan = stripStringLiterals(sql);
+	int maxSnippetLen = 80;
+
+	Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+	Matcher matcher = pattern.matcher(sqlToScan);
+	while(matcher.find()){
+	String formattedSchemaName = matcher.group(1).replace("[","").replace("]","");
+	
+		if(!schemaStringList.contains(formattedSchemaName) && availableSchemasList.contains(formattedSchemaName)) {
+			nonManagedSchemaFound = true;
+			String statement = extractEnclosingStatement(sqlToScan, matcher.start(), matcher.end());
+			String snippet = statement.trim().replaceAll("\\s+", " ");
+			if (snippet.length() > maxSnippetLen) {
+				snippet = snippet.substring(0, maxSnippetLen) + "...";
+			}
+			Logger log = LoggerFactory.getLogger("deployPackager");
+			String diagnosticMessage = "CheckProjectSchemas: unmanaged schema \"" + formattedSchemaName
+					+ "\" referenced in statement starting with: \"" + snippet + "\" in file " + fileName;
+			System.out.println(diagnosticMessage);
+			log.info(diagnosticMessage);
+		}
+	}
+	
+	return nonManagedSchemaFound;
+}
+
+function DatabaseDef getDatabaseDef(Project project) {
+	String dbName = project.getSchemaSelectionStep();
+	DatabaseDef dbDef = DatabaseDefUtil.findDbByName(project, dbName);
+	return dbDef;
+}
+
+function List<String> getAvailableSchemas(Project project, DBOperations operations){
+	DatabaseDef dbDef = getDatabaseDef(project);
+	List<String> schemas =  new ArrayList();
+	Connection connection = null;
+	try {
+		connection = DatabaseBuilder.buildPlainConnection(dbDef);
+		schemas = operations.getSchemaNames(connection);		
+	 } catch (Exception dbe) {
+			
+	 }  finally {
+		  if (connection != null){
+			try {
+			  connection.close();
+			} catch (Exception e) {
+			  ; // do nothing
+			}
+		  }
+		}
+	  return schemas;
+}
+
+rule "CheckProjectSchemas"
+    salience 1
+	when
+	    $project : Project()
+		$operations : DBOperations()
+		woc : WithoutComments(validateSql(getText().toLowerCase(), $project, $operations, "(\\S+)\\s*\\.\\s*(\\S+)", getSqlFile().toString()))
+	then
+		String errorMessage = "Script references a Schema not managed by this Liquibase pipeline. (Script: " + woc.getSqlFile().toString() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+	end
