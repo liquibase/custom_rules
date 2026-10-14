@@ -215,7 +215,7 @@ function boolean ddl_found(String sql) {
  * negative this fixes.
  */
 function boolean ddl_without_edit_owner(String sql) {
-    System.out.println("Validation called: Restrict Create/Alter/Drop");
+    System.out.println("Validation called: RestrictCreateAlterDrop");
 
 	String sqlToScan = stripStringLiterals(sql);
 	final Pattern ddlPattern = Pattern.compile("\\b(create|alter|drop)\\b", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
