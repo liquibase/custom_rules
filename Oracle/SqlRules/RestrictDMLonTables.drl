@@ -74,7 +74,10 @@ function String stripStringLiterals(String sql) {
 				String lc = sql.substring(i, i + 1);
 				if (lc.equals("'")) {
 					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
-						dataMode = !dataMode;
+						// outside EXECUTE IMMEDIATE a doubled quote is just an escaped quote
+						if (inDynamicSqlChain) {
+							dataMode = !dataMode;
+						}
 						out.append("''");
 						i = i + 2;
 						continue;

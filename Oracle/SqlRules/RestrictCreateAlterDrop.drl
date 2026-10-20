@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Liquibase, Inc. All Rights Reserved.
 /*
 @author Liquibase
-@version 1.1
-@date 13-Jul-2026
+@version 1.2
+@date 20-Oct-2026
 @description Error if CREATE/ALTER/DROP statements outside of the EDIT_OWNER schema.
 */
 /*
@@ -29,6 +29,10 @@ Version 1.1:
   and returned no violation for the file.
 - Added diagnostic output (console + log, see below) showing the starting
   text of each offending statement.
+
+Version 1.2: 
+Fixes an issue with escaped quotes.
+
 */
 package com.datical.hammer.core.sqlrules.RestrictCreateAlterDrop
 import java.util.regex.Matcher;
@@ -77,7 +81,10 @@ function String stripStringLiterals(String sql) {
 				String lc = sql.substring(i, i + 1);
 				if (lc.equals("'")) {
 					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
-						dataMode = !dataMode;
+						// outside EXECUTE IMMEDIATE a doubled quote is just an escaped quote
+						if (inDynamicSqlChain) {
+							dataMode = !dataMode;
+						}
 						out.append("''");
 						i = i + 2;
 						continue;

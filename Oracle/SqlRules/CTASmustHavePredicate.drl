@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Liquibase, Inc. All Rights Reserved.
 /*
 @author Liquibase
-@version 1.1
-@date 07-Jul-2026
+@version 1.2
+@date 20-Oct-2026
 @description Warn if CTAS statement does not contain a WHERE clause.
 */
 /*
@@ -15,6 +15,10 @@ Version 1.1: strips quoted string literal contents (Oracle-style, dynamic-SQL
 aware) before scanning, so text field values (e.g. a description column
 containing words like "create"/"table"/"select"/"where") aren't mistaken
 for SQL. Same helper used in the CheckProjectSchemas rule.
+
+Version 1.2: 
+Fixes an issue with escaped quotes.
+
 */
 package com.datical.hammer.core.sqlrules.CTASmustHavePredicate
 import java.util.regex.Matcher;
@@ -65,7 +69,10 @@ function String stripStringLiterals(String sql) {
 				String lc = sql.substring(i, i + 1);
 				if (lc.equals("'")) {
 					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
-						dataMode = !dataMode;
+						// outside EXECUTE IMMEDIATE a doubled quote is just an escaped quote
+						if (inDynamicSqlChain) {
+							dataMode = !dataMode;
+						}
 						out.append("''");
 						i = i + 2;
 						continue;
