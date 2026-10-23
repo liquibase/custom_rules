@@ -94,6 +94,9 @@ function String stripStringLiterals(String sql) {
 			}
 			out.append("'");
 			i = i + 1;
+			int valueStart = i;
+			int outValueStart = out.length();
+			boolean closed = false;
 			while (i < n) {
 				String lc = sql.substring(i, i + 1);
 				if (lc.equals("'")) {
@@ -108,6 +111,7 @@ function String stripStringLiterals(String sql) {
 					} else {
 						out.append("'");
 						i = i + 1;
+						closed = true;
 						break;
 					}
 				} else {
@@ -124,6 +128,12 @@ function String stripStringLiterals(String sql) {
 					}
 					i = i + 1;
 				}
+			}
+			if (!closed) {
+				// never closed: not a value, keep the rest of the script as it is
+				out.setLength(outValueStart);
+				out.append(sql.substring(valueStart));
+				i = n;
 			}
 			continue;
 		}
