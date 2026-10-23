@@ -1,0 +1,53 @@
+/*
+@author Liquibase
+@version 1.0
+@date Oct 14, 2026
+@description Check for .sql file extension
+*/
+
+/*
+README: 
+
+This is a SQL Rule to ensure script name ends with a .sql file extension.
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+package com.datical.hammer.core.sqlrules.ScriptNameSql
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+/* @return false if validation fails; true otherwise */
+function boolean validateScriptName(String scriptName) {
+    System.out.println("Validation called: CheckScriptName");
+	
+	final String regex = "\\.sql$";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(scriptName);
+	
+	while (matcher.find()) {
+	  return false;
+    }
+	return true;
+}
+
+rule "Script Name must end with .sql"
+    salience 1
+	when
+		woc : WithoutComments(validateScriptName(getSqlFile().getName().toLowerCase()))
+	then
+		String errorMessage = "Script name must end with .sql (Script: " + woc.getSqlFile().getName() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
+

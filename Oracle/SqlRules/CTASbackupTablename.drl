@@ -1,0 +1,352 @@
+// Copyright (c) 2026 Liquibase, Inc. All Rights Reserved.
+/*
+@author Liquibase
+@version 1.2
+@date 13-Oct-2026
+@description Error if CTAS tablename format is incorrect.
+
+Version 1.0: Initial Rule
+Version 1.1: Added File Name to error message
+Version 1.2: Reports which CTAS statement(s) have an invalid backup table name
+             and why (console + deployPackager log, so it also lands in
+             daticaldb.log); each CTAS statement is now checked on its own;
+             quoted string literals are ignored.
+
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws an ERROR when the CTAS backup tablename does not meet the following criteria:
+	-- EDIT_OWNER is the schema prefix.
+	-- Name contains _BKUP_
+	-- Name ends with a valid retention suffix in the format _1MO, _3MO, _6MO, _2YR
+	
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+Version 1.2 details:
+- Diagnostics: for each CTAS statement with an invalid backup table name, prints
+  the table name, which criteria it fails, and the starting text of the
+  statement. The Response message lists the invalid table name(s) with the
+  line number(s) reported by woc.getLineNumbers(). Statement text is printed in
+  addition to line numbers because WithoutComments() strips comments before
+  this text arrives, so line counts calculated here would not match the file.
+- Each CTAS statement is checked on its own (split on top-level ';'). Before,
+  the name check ran once over the whole file, so a correctly named CTAS
+  anywhere in the file made the check pass for the entire file, hiding a CTAS
+  with an invalid name elsewhere in the same file. Example that was missed:
+    create table orders_copy as select * from o.orders;
+    create table edit_owner.orders_bkup_J1_6mo as select * from o.orders;
+- Quoted string literal contents (Oracle-style, dynamic-SQL aware) are ignored,
+  so a text value such as 'create table x as select y' is not treated as a CTAS.
+  A CTAS inside EXECUTE IMMEDIATE is still checked.
+- A correctly named table followed directly by a column list, e.g.
+  edit_owner.t_bkup_J1_1mo(a, b), is no longer rejected (the name used to have
+  to be followed by whitespace).
+*/
+
+package com.datical.hammer.core.sqlrules.CTASbackupTablename
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/***********************************************************  Rules  *************************************************************/
+
+/*
+ * Strips single-quoted SQL string literal contents so they are not scanned
+ * as SQL. Handles Oracle-style doubled single quotes ('') as escaped quotes,
+ * and is aware of EXECUTE IMMEDIATE dynamic SQL, where the real SQL command
+ * is itself built as a string literal via concatenation.
+ *
+ * Known limitation: only triggers off the literal keyword "EXECUTE IMMEDIATE"
+ * appearing before the string. Dynamic SQL built into a variable earlier and
+ * executed later (v_sql := '...'; ... EXECUTE IMMEDIATE v_sql;) won't be
+ * recognized as code, and the literal will be treated as an ordinary value
+ * (fully masked). Also does not handle alternative Oracle quoting (q'[...]').
+ */
+function String stripStringLiterals(String sql) {
+	StringBuilder out = new StringBuilder(sql.length());
+	int n = sql.length();
+	int i = 0;
+	boolean inDynamicSqlChain = false;
+	boolean dataMode = true;
+	String upper = sql.toUpperCase();
+	String KEYWORD = "EXECUTE IMMEDIATE";
+	int keywordLen = KEYWORD.length();
+
+	while (i < n) {
+		String c = sql.substring(i, i + 1);
+
+		if (c.equals("'")) {
+			if (!inDynamicSqlChain) {
+				dataMode = true;
+			}
+			out.append("'");
+			i = i + 1;
+			int valueStart = i;
+			int outValueStart = out.length();
+			boolean closed = false;
+			while (i < n) {
+				String lc = sql.substring(i, i + 1);
+				if (lc.equals("'")) {
+					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
+						// outside EXECUTE IMMEDIATE a doubled quote is just an escaped quote
+						if (inDynamicSqlChain) {
+							dataMode = !dataMode;
+						}
+						out.append("''");
+						i = i + 2;
+						continue;
+					} else {
+						out.append("'");
+						i = i + 1;
+						closed = true;
+						break;
+					}
+				} else {
+					if (dataMode) {
+						// preserve whitespace so masked data doesn't collapse into one
+						// long non-whitespace run, which slows regex matching below
+						if (lc.equals(" ") || lc.equals("\t") || lc.equals("\n") || lc.equals("\r")) {
+							out.append(lc);
+						} else {
+							out.append("x");
+						}
+					} else {
+						out.append(lc);
+					}
+					i = i + 1;
+				}
+			}
+			if (!closed) {
+				// never closed: not a value, keep the rest of the script as it is
+				out.setLength(outValueStart);
+				out.append(sql.substring(valueStart));
+				i = n;
+			}
+			continue;
+		}
+
+		if (!inDynamicSqlChain && i + keywordLen <= n
+				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+			inDynamicSqlChain = true;
+			dataMode = false;
+			out.append(sql.substring(i, i + keywordLen));
+			i = i + keywordLen;
+			continue;
+		}
+
+		if (inDynamicSqlChain && c.equals(";")) {
+			inDynamicSqlChain = false;
+		}
+
+		out.append(c);
+		i = i + 1;
+	}
+
+	return out.toString();
+}
+
+/*
+ * Splits already-literal-stripped SQL into statements on top-level ';'
+ * (safe after stripping, since masked data no longer contains stray
+ * semicolons). Empty/whitespace-only chunks are skipped.
+ */
+function List<String> splitStatements(String sqlToScan) {
+	List<String> result = new ArrayList<String>();
+	int n = sqlToScan.length();
+	int stmtStart = 0;
+	while (stmtStart <= n) {
+		int semiIdx = sqlToScan.indexOf(";", stmtStart);
+		int stmtEnd = (semiIdx == -1) ? n : semiIdx;
+		if (stmtEnd > stmtStart) {
+			String statement = sqlToScan.substring(stmtStart, stmtEnd);
+			if (statement.trim().length() > 0) {
+				result.add(statement);
+			}
+		}
+		if (semiIdx == -1) {
+			break;
+		}
+		stmtStart = stmtEnd + 1;
+	}
+	return result;
+}
+
+/* A CTAS statement */
+function Pattern ctasPattern() {
+	return Pattern.compile("(create)(.+)(table)(.+)(as)(.+)(select)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+}
+
+/* A CTAS statement whose backup table name is in the required format */
+function Pattern validNamePattern() {
+	return Pattern.compile("(create)(.+)(table)(.+)(edit_owner)(.+)(_bkup_)(.+)(_1mo|_3mo|6mo|2yr)(\\s|\\()(.*)(as)(.+)(select)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+}
+
+/* The table name in a CREATE TABLE statement, or an empty string if it can't be read */
+function String backupTableName(String statement) {
+	final Matcher matcher = Pattern.compile("\\bcreate\\b[^;]*?\\btable\\s+([^\\s(]+)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE).matcher(statement);
+	if (matcher.find()) {
+		return matcher.group(1);
+	}
+	return "";
+}
+
+/* Which of the naming criteria the table name fails (for the diagnostic only) */
+function String badNameReasons(String tableName) {
+	if (tableName.length() == 0) {
+		return "could not read the table name from the statement";
+	}
+	String lower = tableName.toLowerCase();
+	StringBuilder reasons = new StringBuilder();
+	if (!lower.startsWith("edit_owner.")) {
+		reasons.append("not prefixed with EDIT_OWNER.");
+	}
+	if (lower.indexOf("_bkup_") == -1) {
+		if (reasons.length() > 0) {
+			reasons.append("; ");
+		}
+		reasons.append("missing _BKUP_");
+	}
+	if (!lower.matches(".*_(1mo|3mo|6mo|2yr)$")) {
+		if (reasons.length() > 0) {
+			reasons.append("; ");
+		}
+		reasons.append("missing retention suffix (_1MO, _3MO, _6MO or _2YR)");
+	}
+	if (reasons.length() == 0) {
+		reasons.append("name looks valid but the statement did not match the expected pattern (check the spacing around the name)");
+	}
+	return reasons.toString();
+}
+
+/*
+ * Asks the framework for the line number(s) of the given text (the table name
+ * exactly as spelled in the script). Returns an empty string if it reports none.
+ */
+function String tableNameLines(WithoutComments woc, String tableName) {
+	if (tableName.length() == 0) {
+		return "";
+	}
+	try {
+		Object lines = woc.getLineNumbers(tableName);
+		String text = ("" + lines).trim();
+		if (text.length() > 0 && !text.equals("[]") && !text.equals("null")) {
+			return text;
+		}
+	} catch (Exception e) {
+		; // do nothing
+	}
+	return "";
+}
+
+/*
+ * Diagnostic only -- does not affect the FAIL/no-FAIL decision, which comes
+ * from CTAS_exists / CTAS_bad_name below. For each CTAS statement with an
+ * invalid backup table name, prints (to both console and the deployPackager
+ * logger, so it also lands in daticaldb.log) the table name, the criteria it
+ * fails and the START OF THE STATEMENT TEXT. Data values inside quotes are
+ * masked (shown as x's) so customer data is not written to the console or log.
+ *
+ * Returns the text for the Response message: each invalid table name with the
+ * line number(s) the framework reports for it.
+ */
+function String reportBadBackupNames(WithoutComments woc) {
+	String fileName = woc.getSqlFile().toString();
+	String sqlToScan = stripStringLiterals(woc.getText());
+	final Pattern ctas = ctasPattern();
+	final Pattern validName = validNamePattern();
+	int maxSnippetLen = 80;
+	Logger log = LoggerFactory.getLogger("deployPackager");
+
+	Set<String> details = new LinkedHashSet<String>();
+
+	for (String statement : splitStatements(sqlToScan)) {
+		if (ctas.matcher(statement).find() && !validName.matcher(statement).find()) {
+			String tableName = backupTableName(statement);
+			String snippet = statement.trim().replaceAll("\\s+", " ").replaceAll("^/\\s*", "");
+			if (snippet.length() > maxSnippetLen) {
+				snippet = snippet.substring(0, maxSnippetLen) + "...";
+			}
+			String shownName = (tableName.length() == 0) ? "(table name not found)" : tableName;
+			String diagnosticMessage = "CTASbackupTablename: invalid backup table name [" + shownName + "]: "
+					+ badNameReasons(tableName) + " - statement starting with: \"" + snippet + "\" in file " + fileName;
+			System.out.println(diagnosticMessage);
+			log.info(diagnosticMessage);
+
+			String lines = tableNameLines(woc, tableName);
+			if (lines.length() > 0) {
+				details.add(shownName + " (found on line(s): " + lines + ")");
+			} else {
+				details.add(shownName);
+			}
+		}
+	}
+
+	StringBuilder detail = new StringBuilder();
+	for (String d : details) {
+		if (detail.length() > 0) {
+			detail.append("; ");
+		}
+		detail.append(d);
+	}
+	return detail.toString();
+}
+
+/* @return true if a CTAS is found in any statement */
+
+function boolean CTAS_exists(String sql) {
+/*    System.out.println("Validation called: Check for CTAS"); */
+
+	String sqlToScan = stripStringLiterals(sql);
+	final Pattern pattern = ctasPattern();
+
+	for (String statement : splitStatements(sqlToScan)) {
+		if (pattern.matcher(statement).find()) {
+/*			System.out.println("CTAS was found"); */
+			return true;
+		}
+	}
+/*	System.out.println("No CTAS was found"); */
+	return false;
+} 
+
+/* @return true if at least one CTAS statement has an invalid backup tablename */
+
+function boolean CTAS_bad_name(String sql) {
+    System.out.println("Validation called: CTASbackupTablename");
+
+	String sqlToScan = stripStringLiterals(sql);
+	final Pattern ctas = ctasPattern();
+	final Pattern validName = validNamePattern();
+
+	for (String statement : splitStatements(sqlToScan)) {
+		if (ctas.matcher(statement).find() && !validName.matcher(statement).find()) {
+/*			System.out.println("Backup tablename validation failed"); */
+			return true;
+		}
+	}
+/*	System.out.println("Backup tablename OK"); */
+	return false;
+} 
+
+rule "CTASbackupTablename"
+    salience 1
+	when
+		ctas : WithoutComments(CTAS_exists(getText()))
+		ctas_name : WithoutComments(CTAS_bad_name(getText()))
+	then
+		String detail = reportBadBackupNames(ctas_name);
+		String errorMessage = "Backup tablename should be in the format EDIT_OWNER.tablename_BKUP_JiraID_retention. Invalid: " + detail + ". (Script: " + ctas_name.getSqlFile().toString() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end
