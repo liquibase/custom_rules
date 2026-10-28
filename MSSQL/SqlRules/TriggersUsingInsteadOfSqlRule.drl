@@ -1,0 +1,46 @@
+/*
+@author Liquibase
+@version 1.0
+@date Oct 28, 2026
+@description:
+-- Warn if trigger contains "INSTEAD OF"
+*/
+
+/*
+README: 
+
+This is a SQL Rule:
+-- Warn if trigger script contains "INSTEAD OF"
+
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+package com.datical.hammer.core.sqlrules.java.TriggerUsingInsteadOf;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+/* @return true if an INSTEAD OF trigger is found (rule violation); false otherwise */
+function boolean validateSql(String sql) {
+    final String regex = "(?is)\\b(?:CREATE(?:\\s+OR\\s+ALTER)?|ALTER)\\s+TRIGGER\\b(?:(?!\\b(?:AFTER|FOR)\\b|(?<!EXECUTE\\s)\\bAS\\b).)*?\\bINSTEAD\\s+OF\\b";
+    return Pattern.compile(regex).matcher(sql).find();
+}
+
+rule "Warn if trigger script contains INSTEAD OF"
+    salience 1
+    when
+        woc : WithoutComments(validateSql(getText()))
+    then
+        String errorMessage = "Triggers should not use INSTEAD OF. SQL Script (" + woc.getSqlFile().getName() + ")";
+        insert(new Response(ResponseType.WARN, errorMessage, drools.getRule().getName()));
+end
