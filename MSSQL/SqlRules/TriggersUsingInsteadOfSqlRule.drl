@@ -41,6 +41,6 @@ rule "Warn if trigger script contains INSTEAD OF"
     when
         woc : WithoutComments(validateSql(getText()))
     then
-        String errorMessage = "Triggers should not use INSTEAD OF. SQL Script (" + woc.getSqlFile().getName() + ")";
+        String errorMessage = "Triggers should not use INSTEAD OF. (SQL Script: " + woc.getSqlFile().getName() + ")";
         insert(new Response(ResponseType.WARN, errorMessage, drools.getRule().getName()));
 end
