@@ -64,12 +64,20 @@ function String stripStringLiterals(String sql) {
 	int i = 0;
 	boolean inDynamicSqlChain = false;
 	boolean dataMode = true;
-	String upper = sql.toUpperCase();
-	String KEYWORD = "EXECUTE IMMEDIATE";
-	int keywordLen = KEYWORD.length();
+    Matcher executeImmediate = Pattern.compile("EXECUTE\\s+IMMEDIATE", Pattern.CASE_INSENSITIVE).matcher(sql);
+    // SQL*Plus REM / PROMPT lines are not SQL; an apostrophe in them (PROMPT Don't run twice) is not a quote
+    Matcher remarkLine = Pattern.compile("[ \\t]*(REM|REMARK|PRO|PROMPT)\\b", Pattern.CASE_INSENSITIVE).matcher(sql);
 
 	while (i < n) {
 		String c = sql.substring(i, i + 1);
+
+		if (!inDynamicSqlChain && (i == 0 || sql.substring(i - 1, i).equals("\n")) && remarkLine.region(i, n).lookingAt()) {
+			int lineEnd = sql.indexOf("\n", i);
+			lineEnd = (lineEnd == -1) ? n : lineEnd;
+			out.append(sql.substring(i, lineEnd));
+			i = lineEnd;
+			continue;
+		}
 
 		if (c.equals("'")) {
 			if (!inDynamicSqlChain) {
@@ -121,12 +129,11 @@ function String stripStringLiterals(String sql) {
 			continue;
 		}
 
-		if (!inDynamicSqlChain && i + keywordLen <= n
-				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+		if (!inDynamicSqlChain && executeImmediate.region(i, n).lookingAt()) {
 			inDynamicSqlChain = true;
 			dataMode = false;
-			out.append(sql.substring(i, i + keywordLen));
-			i = i + keywordLen;
+			out.append(sql.substring(i, executeImmediate.end()));
+			i = executeImmediate.end();
 			continue;
 		}
 

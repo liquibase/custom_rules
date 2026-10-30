@@ -45,12 +45,20 @@ function String stripStringLiterals(String sql) {
 	int i = 0;
 	boolean inDynamicSqlChain = false;
 	boolean dataMode = true;
-	String upper = sql.toUpperCase();
-	String KEYWORD = "EXECUTE IMMEDIATE";
-	int keywordLen = KEYWORD.length();
+	Matcher executeImmediate = Pattern.compile("EXECUTE\\s+IMMEDIATE", Pattern.CASE_INSENSITIVE).matcher(sql);
+	// SQL*Plus REM / PROMPT lines are not SQL; an apostrophe in them (PROMPT Don't run twice) is not a quote
+	Matcher remarkLine = Pattern.compile("[ \\t]*(REM|REMARK|PRO|PROMPT)\\b", Pattern.CASE_INSENSITIVE).matcher(sql);
 
 	while (i < n) {
 		String c = sql.substring(i, i + 1);
+
+		if (!inDynamicSqlChain && (i == 0 || sql.substring(i - 1, i).equals("\n")) && remarkLine.region(i, n).lookingAt()) {
+			int lineEnd = sql.indexOf("\n", i);
+			lineEnd = (lineEnd == -1) ? n : lineEnd;
+			out.append(sql.substring(i, lineEnd));
+			i = lineEnd;
+			continue;
+		}
 
 		if (c.equals("'")) {
 			if (!inDynamicSqlChain) {
@@ -58,17 +66,24 @@ function String stripStringLiterals(String sql) {
 			}
 			out.append("'");
 			i = i + 1;
+			int valueStart = i;
+			int outValueStart = out.length();
+			boolean closed = false;
 			while (i < n) {
 				String lc = sql.substring(i, i + 1);
 				if (lc.equals("'")) {
 					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
-						dataMode = !dataMode;
+						// outside EXECUTE IMMEDIATE a doubled quote is just an escaped quote
+						if (inDynamicSqlChain) {
+							dataMode = !dataMode;
+						}
 						out.append("''");
 						i = i + 2;
 						continue;
 					} else {
 						out.append("'");
 						i = i + 1;
+						closed = true;
 						break;
 					}
 				} else {
@@ -86,15 +101,20 @@ function String stripStringLiterals(String sql) {
 					i = i + 1;
 				}
 			}
+			if (!closed) {
+				// never closed: not a value, keep the rest of the script as it is
+				out.setLength(outValueStart);
+				out.append(sql.substring(valueStart));
+				i = n;
+			}
 			continue;
 		}
 
-		if (!inDynamicSqlChain && i + keywordLen <= n
-				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+		if (!inDynamicSqlChain && executeImmediate.region(i, n).lookingAt()) {
 			inDynamicSqlChain = true;
 			dataMode = false;
-			out.append(sql.substring(i, i + keywordLen));
-			i = i + keywordLen;
+			out.append(sql.substring(i, executeImmediate.end()));
+			i = executeImmediate.end();
 			continue;
 		}
 
@@ -109,19 +129,17 @@ function String stripStringLiterals(String sql) {
 	return out.toString();
 }
 
-/* @return true if GRANT is found */
-
-
 /* @return true if REVOKE is found */
 
 function boolean revoke_found(String sql) {
 
     System.out.println("Validation called: DisallowRevoke");
+	String sqlToScan = stripStringLiterals(sql);
 	
 	final String regex = "(revoke)(\\s)([^;]+)(\\s)(from)(\\s)";
 /* Specify DOTALL to include the newline characters */
 	final Pattern pattern = Pattern.compile(regex, Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-    final Matcher matcher = pattern.matcher(sql);
+    final Matcher matcher = pattern.matcher(sqlToScan);
 	
 	while (matcher.find()) {
 	  return true;
@@ -133,8 +151,9 @@ rule "DisallowRevoke"
     salience 1
 	when
 		woc : WithoutComments(revoke_found(getText().toLowerCase()))
+		wc : WithComments(sqlFile == woc.sqlFile)
 	then
-		String errorMessage = "Revokes are not allowed.  Revoke was found on line(s): " + woc.getLineNumbers("revoke");
+		String errorMessage = "Revokes are not allowed.  Revoke was found on line(s): " + wc.getLineNumbers("revoke");
         insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
 		
 	end

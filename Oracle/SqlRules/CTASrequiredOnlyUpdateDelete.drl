@@ -19,7 +19,7 @@ Version 1.2:
   before scanning, so text values containing words like "update", "delete"
   or "create table ... as select" are not mistaken for SQL.
 - Only counts an UPDATE or DELETE that is an actual statement: one that starts
-  a statement, or follows BEGIN / LOOP / THEN / ELSE / EXCEPTION / DECLARE, or
+  a line, or follows BEGIN / LOOP / THEN / ELSE / EXCEPTION / DECLARE, or
   is the start of an EXECUTE IMMEDIATE string. Words that merely appear inside
   other statements no longer count, e.g. ON DELETE CASCADE, SELECT ... FOR
   UPDATE, BEFORE UPDATE OR DELETE in a trigger, GRANT UPDATE, DELETE.
@@ -69,12 +69,20 @@ function String stripStringLiterals(String sql) {
 	int i = 0;
 	boolean inDynamicSqlChain = false;
 	boolean dataMode = true;
-	String upper = sql.toUpperCase();
-	String KEYWORD = "EXECUTE IMMEDIATE";
-	int keywordLen = KEYWORD.length();
+	Matcher executeImmediate = Pattern.compile("EXECUTE\\s+IMMEDIATE", Pattern.CASE_INSENSITIVE).matcher(sql);
+	// SQL*Plus REM / PROMPT lines are not SQL; an apostrophe in them (PROMPT Don't run twice) is not a quote
+	Matcher remarkLine = Pattern.compile("[ \\t]*(REM|REMARK|PRO|PROMPT)\\b", Pattern.CASE_INSENSITIVE).matcher(sql);
 
 	while (i < n) {
 		String c = sql.substring(i, i + 1);
+
+		if (!inDynamicSqlChain && (i == 0 || sql.substring(i - 1, i).equals("\n")) && remarkLine.region(i, n).lookingAt()) {
+			int lineEnd = sql.indexOf("\n", i);
+			lineEnd = (lineEnd == -1) ? n : lineEnd;
+			out.append(sql.substring(i, lineEnd));
+			i = lineEnd;
+			continue;
+		}
 
 		if (c.equals("'")) {
 			if (!inDynamicSqlChain) {
@@ -126,12 +134,11 @@ function String stripStringLiterals(String sql) {
 			continue;
 		}
 
-		if (!inDynamicSqlChain && i + keywordLen <= n
-				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+		if (!inDynamicSqlChain && executeImmediate.region(i, n).lookingAt()) {
 			inDynamicSqlChain = true;
 			dataMode = false;
-			out.append(sql.substring(i, i + keywordLen));
-			i = i + keywordLen;
+			out.append(sql.substring(i, executeImmediate.end()));
+			i = executeImmediate.end();
 			continue;
 		}
 
@@ -179,14 +186,15 @@ function Pattern ctasPattern() {
 
 /*
  * An UPDATE or DELETE that is an actual statement: at the start of a
- * statement (a leading "/" from a PL/SQL terminator is allowed), right after
- * BEGIN / LOOP / THEN / ELSE / EXCEPTION / DECLARE, or at the start of an
- * EXECUTE IMMEDIATE string. This deliberately does NOT match UPDATE/DELETE
- * words inside other statements (ON DELETE CASCADE, FOR UPDATE, trigger
- * events, GRANT lists).
+ * line (a leading "/" from a PL/SQL terminator is allowed), right after
+ * BEGIN / LOOP / THEN / ELSE / EXCEPTION / DECLARE or a <<label>>, or at the
+ * start of an EXECUTE IMMEDIATE string. This deliberately does NOT match
+ * UPDATE/DELETE words inside other statements (ON DELETE CASCADE, FOR UPDATE,
+ * trigger events, GRANT lists), including a line that continues a list from
+ * the line before (GRANT SELECT, / UPDATE ...; BEFORE INSERT OR / UPDATE ON).
  */
 function Pattern updateDeletePattern() {
-	return Pattern.compile("(^[\\s/]*|\\b(begin|loop|then|else|exception|declare)\\s+|\\bimmediate\\s+'\\s*)(update|delete)\\s", Pattern.CASE_INSENSITIVE);
+	return Pattern.compile("(^(?<!(?:,|\\b(?:or|on|for|of))\\s{1,40})[\\s/]*|\\b(begin|loop|then|else|exception|declare)\\s+|>>\\s*|\\bimmediate\\s+'\\s*)(update|delete)\\s", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
 }
 
 /*

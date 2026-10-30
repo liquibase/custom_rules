@@ -29,7 +29,7 @@ Version 1.2 details:
 - Diagnostics: for each CTAS statement with an invalid backup table name, prints
   the table name, which criteria it fails, and the starting text of the
   statement. The Response message lists the invalid table name(s) with the
-  line number(s) reported by woc.getLineNumbers(). Statement text is printed in
+  line number(s) reported by wc.getLineNumbers(). Statement text is printed in
   addition to line numbers because WithoutComments() strips comments before
   this text arrives, so line counts calculated here would not match the file.
 - Each CTAS statement is checked on its own (split on top-level ';'). Before,
@@ -79,12 +79,20 @@ function String stripStringLiterals(String sql) {
 	int i = 0;
 	boolean inDynamicSqlChain = false;
 	boolean dataMode = true;
-	String upper = sql.toUpperCase();
-	String KEYWORD = "EXECUTE IMMEDIATE";
-	int keywordLen = KEYWORD.length();
+	Matcher executeImmediate = Pattern.compile("EXECUTE\\s+IMMEDIATE", Pattern.CASE_INSENSITIVE).matcher(sql);
+	// SQL*Plus REM / PROMPT lines are not SQL; an apostrophe in them (PROMPT Don't run twice) is not a quote
+	Matcher remarkLine = Pattern.compile("[ \\t]*(REM|REMARK|PRO|PROMPT)\\b", Pattern.CASE_INSENSITIVE).matcher(sql);
 
 	while (i < n) {
 		String c = sql.substring(i, i + 1);
+
+		if (!inDynamicSqlChain && (i == 0 || sql.substring(i - 1, i).equals("\n")) && remarkLine.region(i, n).lookingAt()) {
+			int lineEnd = sql.indexOf("\n", i);
+			lineEnd = (lineEnd == -1) ? n : lineEnd;
+			out.append(sql.substring(i, lineEnd));
+			i = lineEnd;
+			continue;
+		}
 
 		if (c.equals("'")) {
 			if (!inDynamicSqlChain) {
@@ -136,12 +144,11 @@ function String stripStringLiterals(String sql) {
 			continue;
 		}
 
-		if (!inDynamicSqlChain && i + keywordLen <= n
-				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+		if (!inDynamicSqlChain && executeImmediate.region(i, n).lookingAt()) {
 			inDynamicSqlChain = true;
 			dataMode = false;
-			out.append(sql.substring(i, i + keywordLen));
-			i = i + keywordLen;
+			out.append(sql.substring(i, executeImmediate.end()));
+			i = executeImmediate.end();
 			continue;
 		}
 
@@ -233,12 +240,12 @@ function String badNameReasons(String tableName) {
  * Asks the framework for the line number(s) of the given text (the table name
  * exactly as spelled in the script). Returns an empty string if it reports none.
  */
-function String tableNameLines(WithoutComments woc, String tableName) {
+function String tableNameLines(WithComments wc, String tableName) {
 	if (tableName.length() == 0) {
 		return "";
 	}
 	try {
-		Object lines = woc.getLineNumbers(tableName);
+		Object lines = wc.getLineNumbers(tableName);
 		String text = ("" + lines).trim();
 		if (text.length() > 0 && !text.equals("[]") && !text.equals("null")) {
 			return text;
@@ -260,7 +267,7 @@ function String tableNameLines(WithoutComments woc, String tableName) {
  * Returns the text for the Response message: each invalid table name with the
  * line number(s) the framework reports for it.
  */
-function String reportBadBackupNames(WithoutComments woc) {
+function String reportBadBackupNames(WithoutComments woc, WithComments wc) {
 	String fileName = woc.getSqlFile().toString();
 	String sqlToScan = stripStringLiterals(woc.getText());
 	final Pattern ctas = ctasPattern();
@@ -283,7 +290,7 @@ function String reportBadBackupNames(WithoutComments woc) {
 			System.out.println(diagnosticMessage);
 			log.info(diagnosticMessage);
 
-			String lines = tableNameLines(woc, tableName);
+			String lines = tableNameLines(wc, tableName);
 			if (lines.length() > 0) {
 				details.add(shownName + " (found on line(s): " + lines + ")");
 			} else {
@@ -343,9 +350,10 @@ rule "CTASbackupTablename"
     salience 1
 	when
 		ctas : WithoutComments(CTAS_exists(getText()))
-		ctas_name : WithoutComments(CTAS_bad_name(getText()))
+		ctas_name : WithoutComments(CTAS_bad_name(getText()), sqlFile == ctas.sqlFile)
+		wc : WithComments(sqlFile == ctas.sqlFile)
 	then
-		String detail = reportBadBackupNames(ctas_name);
+		String detail = reportBadBackupNames(ctas_name, wc);
 		String errorMessage = "Backup tablename should be in the format EDIT_OWNER.tablename_BKUP_JiraID_retention. Invalid: " + detail + ". (Script: " + ctas_name.getSqlFile().toString() + ")";
         insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
 		

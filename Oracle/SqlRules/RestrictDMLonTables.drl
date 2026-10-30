@@ -9,7 +9,7 @@ Version 1.1:
 - Reports WHERE the problem is: for each restricted table that has DML against
   it, prints (console + deployPackager log, so it also lands in daticaldb.log)
   the starting text of the offending statement, and adds the table name and the
-  line number(s) from woc.getLineNumbers() to the Response message. Statement
+  line number(s) from wc.getLineNumbers() to the Response message. Statement
   text is used in addition to line numbers because WithoutComments() strips
   comments before this text arrives, so line counts calculated here would not
   match the file; the framework's getLineNumbers() is used instead.
@@ -33,6 +33,7 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import com.datical.hammer.core.rules.WithoutComments;
+import com.datical.hammer.core.rules.WithComments;
 import com.datical.hammer.core.rules.Response;
 import com.datical.hammer.core.rules.Response.ResponseType;
 import org.slf4j.Logger;
@@ -57,12 +58,20 @@ function String stripStringLiterals(String sql) {
 	int i = 0;
 	boolean inDynamicSqlChain = false;
 	boolean dataMode = true;
-	String upper = sql.toUpperCase();
-	String KEYWORD = "EXECUTE IMMEDIATE";
-	int keywordLen = KEYWORD.length();
+	Matcher executeImmediate = Pattern.compile("EXECUTE\\s+IMMEDIATE", Pattern.CASE_INSENSITIVE).matcher(sql);
+	// SQL*Plus REM / PROMPT lines are not SQL; an apostrophe in them (PROMPT Don't run twice) is not a quote
+	Matcher remarkLine = Pattern.compile("[ \\t]*(REM|REMARK|PRO|PROMPT)\\b", Pattern.CASE_INSENSITIVE).matcher(sql);
 
 	while (i < n) {
 		String c = sql.substring(i, i + 1);
+
+		if (!inDynamicSqlChain && (i == 0 || sql.substring(i - 1, i).equals("\n")) && remarkLine.region(i, n).lookingAt()) {
+			int lineEnd = sql.indexOf("\n", i);
+			lineEnd = (lineEnd == -1) ? n : lineEnd;
+			out.append(sql.substring(i, lineEnd));
+			i = lineEnd;
+			continue;
+		}
 
 		if (c.equals("'")) {
 			if (!inDynamicSqlChain) {
@@ -114,12 +123,11 @@ function String stripStringLiterals(String sql) {
 			continue;
 		}
 
-		if (!inDynamicSqlChain && i + keywordLen <= n
-				&& upper.regionMatches(i, KEYWORD, 0, keywordLen)) {
+		if (!inDynamicSqlChain && executeImmediate.region(i, n).lookingAt()) {
 			inDynamicSqlChain = true;
 			dataMode = false;
-			out.append(sql.substring(i, i + keywordLen));
-			i = i + keywordLen;
+			out.append(sql.substring(i, executeImmediate.end()));
+			i = executeImmediate.end();
 			continue;
 		}
 
@@ -213,9 +221,9 @@ function boolean forbiddenTablessExist(String sql) {
  * string if it reports none. Uses the table name exactly as it was spelled in
  * the script (the original text, not a regex).
  */
-function String restrictedTableLines(WithoutComments woc, String tableToken) {
+function String restrictedTableLines(WithComments wc, String tableToken) {
 	try {
-		Object lines = woc.getLineNumbers(tableToken);
+		Object lines = wc.getLineNumbers(tableToken);
 		String text = ("" + lines).trim();
 		if (text.length() > 0 && !text.equals("[]") && !text.equals("null")) {
 			return text;
@@ -239,7 +247,7 @@ function String restrictedTableLines(WithoutComments woc, String tableToken) {
  * line numbers are where the table NAME appears, which can include lines that
  * only SELECT from it; the printed statements show the actual DML.
  */
-function String reportRestrictedDml(WithoutComments woc) {
+function String reportRestrictedDml(WithoutComments woc, WithComments wc) {
 	String fileName = woc.getSqlFile().toString();
 	String text = prepareSql(woc.getText());
 	int maxSnippetLen = 80;
@@ -274,7 +282,7 @@ function String reportRestrictedDml(WithoutComments woc) {
 			if (!tableDetailAdded) {
 				// the table name as spelled in the script = the matched text minus the DML prefix
 				String tableToken = matcher.group(0).substring(matcher.group(1).length());
-				String lines = restrictedTableLines(woc, tableToken);
+				String lines = restrictedTableLines(wc, tableToken);
 				if (lines.length() > 0) {
 					details.add(tableDisplay + " (table name found on line(s): " + lines + ")");
 				} else {
@@ -298,8 +306,9 @@ function String reportRestrictedDml(WithoutComments woc) {
 rule "RestrictDMLonTables"
 when
 		woc : WithoutComments(!forbiddenTablessExist(getText()))
+		wc : WithComments(sqlFile == woc.sqlFile)
 then
-		String detail = reportRestrictedDml(woc);
+		String detail = reportRestrictedDml(woc, wc);
 		String errorMessage = "Script contains DML on a restricted table: " + detail + ". (Script: " + woc.getSqlFile().toString() + ")";
 		insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
 end
