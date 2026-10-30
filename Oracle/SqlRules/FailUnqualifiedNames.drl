@@ -1,0 +1,218 @@
+// Copyright (c) 2026 Liquibase, Inc. All Rights Reserved.
+/*
+@author Liquibase
+@version 1.1
+@date 13-Oct-2026
+@description FAIL if script contains unqualified object names.
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws an ERROR when a script contains unqualified object names.
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+Version 1.1:
+- Strips quoted string literal contents (Oracle-style, dynamic-SQL aware)
+  before scanning, so text values containing words like "update " or
+  "insert into " aren't mistaken for SQL. Example of a false positive that
+  is now corrected:
+    insert into owner.tbl values (1, 'This is an update for system.');
+- Prints a diagnostic (console + deployPackager log, so it also lands in
+  daticaldb.log) for each statement containing an unqualified name, showing
+  the starting text of the statement. Line numbers are NOT used because
+  WithoutComments() strips comments before this text arrives, which would
+  make line counts inaccurate.
+- The text is no longer lowercased in the "when" clause (the regex is already
+  CASE_INSENSITIVE), so the diagnostic text matches the original file and
+  can be searched for directly.
+*/
+
+package com.datical.hammer.core.sqlrules.FailUnqualifiedNames
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/***********************************************************  Rules  *************************************************************/
+
+/*
+ * Strips single-quoted SQL string literal contents so they are not scanned
+ * as SQL. Handles Oracle-style doubled single quotes ('') as escaped quotes,
+ * and is aware of EXECUTE IMMEDIATE dynamic SQL, where the real SQL command
+ * is itself built as a string literal via concatenation.
+ *
+ * Known limitation: only triggers off the literal keyword "EXECUTE IMMEDIATE"
+ * appearing before the string. Dynamic SQL built into a variable earlier and
+ * executed later (v_sql := '...'; ... EXECUTE IMMEDIATE v_sql;) won't be
+ * recognized as code, and the literal will be treated as an ordinary value
+ * (fully masked). Also does not handle alternative Oracle quoting (q'[...]').
+ */
+function String stripStringLiterals(String sql) {
+	StringBuilder out = new StringBuilder(sql.length());
+	int n = sql.length();
+	int i = 0;
+	boolean inDynamicSqlChain = false;
+	boolean dataMode = true;
+    Matcher executeImmediate = Pattern.compile("EXECUTE\\s+IMMEDIATE", Pattern.CASE_INSENSITIVE).matcher(sql);
+    // SQL*Plus REM / PROMPT lines are not SQL; an apostrophe in them (PROMPT Don't run twice) is not a quote
+    Matcher remarkLine = Pattern.compile("[ \\t]*(REM|REMARK|PRO|PROMPT)\\b", Pattern.CASE_INSENSITIVE).matcher(sql);
+
+	while (i < n) {
+		String c = sql.substring(i, i + 1);
+
+		if (!inDynamicSqlChain && (i == 0 || sql.substring(i - 1, i).equals("\n")) && remarkLine.region(i, n).lookingAt()) {
+			int lineEnd = sql.indexOf("\n", i);
+			lineEnd = (lineEnd == -1) ? n : lineEnd;
+			out.append(sql.substring(i, lineEnd));
+			i = lineEnd;
+			continue;
+		}
+
+		if (c.equals("'")) {
+			if (!inDynamicSqlChain) {
+				dataMode = true;
+			}
+			out.append("'");
+			i = i + 1;
+			int valueStart = i;
+			int outValueStart = out.length();
+			boolean closed = false;
+			while (i < n) {
+				String lc = sql.substring(i, i + 1);
+				if (lc.equals("'")) {
+					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
+						// outside EXECUTE IMMEDIATE a doubled quote is just an escaped quote
+						if (inDynamicSqlChain) {
+							dataMode = !dataMode;
+						}
+						out.append("''");
+						i = i + 2;
+						continue;
+					} else {
+						out.append("'");
+						i = i + 1;
+						closed = true;
+						break;
+					}
+				} else {
+					if (dataMode) {
+						// preserve whitespace so masked data doesn't collapse into one
+						// long non-whitespace run, which slows regex matching below
+						if (lc.equals(" ") || lc.equals("\t") || lc.equals("\n") || lc.equals("\r")) {
+							out.append(lc);
+						} else {
+							out.append("x");
+						}
+					} else {
+						out.append(lc);
+					}
+					i = i + 1;
+				}
+			}
+			if (!closed) {
+				// never closed: not a value, keep the rest of the script as it is
+				out.setLength(outValueStart);
+				out.append(sql.substring(valueStart));
+				i = n;
+			}
+			continue;
+		}
+
+		if (!inDynamicSqlChain && executeImmediate.region(i, n).lookingAt()) {
+			inDynamicSqlChain = true;
+			dataMode = false;
+			out.append(sql.substring(i, executeImmediate.end()));
+			i = executeImmediate.end();
+			continue;
+		}
+
+		if (inDynamicSqlChain && c.equals(";")) {
+			inDynamicSqlChain = false;
+		}
+
+		out.append(c);
+		i = i + 1;
+	}
+
+	return out.toString();
+}
+
+/*
+ * Diagnostic only -- does not affect the FAIL/no-FAIL decision, which comes
+ * from unqualified_found below. Prints (to both console and the
+ * deployPackager logger, so it also lands in daticaldb.log) the START OF THE
+ * STATEMENT TEXT for each statement that has an unqualified object name.
+ *
+ * Unlike the CTAS / DDL rules, this check does not need to be statement-
+ * scoped for correctness: the regex tests each CREATE TABLE / INSERT INTO /
+ * DELETE FROM / UPDATE occurrence independently with a local lookahead, so
+ * one qualified statement cannot mask an unqualified one. Statement
+ * boundaries (top-level ';', safe after literal stripping) are only used here
+ * to build a readable snippet, and each statement is reported at most once.
+ */
+function void reportUnqualifiedNameLocations(String sql, String fileName) {
+	String sqlToScan = stripStringLiterals(sql);
+	final String regex = "((create)(\\s+)(table|index)(\\s+)|(insert)(\\s+)(into)(\\s+)|(delete)(\\s+)(from)(\\s+)|(update\\s+))(?!\\s*\\b(\\S+)\\.(\\S+)\\b)";
+	final Pattern pattern = Pattern.compile(regex, Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+	final Matcher matcher = pattern.matcher(sqlToScan);
+
+	int maxSnippetLen = 80;
+	int lastReportedStart = -1;
+
+	while (matcher.find()) {
+		int stmtStart = sqlToScan.lastIndexOf(";", matcher.start());
+		stmtStart = (stmtStart == -1) ? 0 : stmtStart + 1;
+		int stmtEnd = sqlToScan.indexOf(";", matcher.end());
+		stmtEnd = (stmtEnd == -1) ? sqlToScan.length() : stmtEnd;
+
+		if (stmtStart != lastReportedStart) {
+			String snippet = sqlToScan.substring(stmtStart, stmtEnd).trim().replaceAll("\\s+", " ");
+			if (snippet.length() > maxSnippetLen) {
+				snippet = snippet.substring(0, maxSnippetLen) + "...";
+			}
+			Logger log = LoggerFactory.getLogger("deployPackager");
+			String diagnosticMessage = "FailUnqualifiedNames: unqualified object name in statement starting with: \""
+					+ snippet + "\" in file " + fileName;
+			System.out.println(diagnosticMessage);
+			log.info(diagnosticMessage);
+			lastReportedStart = stmtStart;
+		}
+	}
+}
+
+/* @return true if an unqualified object name is found */
+
+function boolean unqualified_found(String sql) {
+
+    System.out.println("Validation called: FailUnqualifiedNames"); 
+	String sqlToScan = stripStringLiterals(sql);
+
+	final String regex = "((create)(\\s+)(table|index)(\\s+)|(insert)(\\s+)(into)(\\s+)|(delete)(\\s+)(from)(\\s+)|(update\\s+))(?!\\s*\\b(\\S+)\\.(\\S+)\\b)";
+/* Specify DOTALL to include the newline characters */
+	final Pattern pattern = Pattern.compile(regex, Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(sqlToScan);
+	
+	while (matcher.find()) {
+	  return true;
+    }
+	return false;
+} 
+
+rule "FailUnqualifiedNames"
+    salience 1
+	when
+		woc : WithoutComments(unqualified_found(getText()))
+	then
+		reportUnqualifiedNameLocations(woc.getText(), woc.getSqlFile().toString());
+		String errorMessage = "All object names must be qualified with a schema prefix. (Script: " + woc.getSqlFile().toString() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end

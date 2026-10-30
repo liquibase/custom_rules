@@ -1,0 +1,165 @@
+// Copyright (c) 2026 Datical, Inc. All Rights Reserved.
+/*
+@author Liquibase
+@version 1.1
+@date 13-Oct-2026
+@description Error if script contains GRANT statements.
+*/
+
+/*
+README: 
+
+This is a SQL Rule which throws an ERROR when a script contains GRANT statements.
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+Version 1.1:
+Strips quoted string literal contents (Oracle-style, dynamic-SQL aware) before
+scanning, so text values such as 'Please grant access to the system' are not
+mistaken for a GRANT statement. A GRANT inside EXECUTE IMMEDIATE is still found.
+Line numbers in the message still come from wc.getLineNumbers("grant").
+
+*/
+
+package com.datical.hammer.core.sqlrules.DisallowGrant
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+/*
+ * Strips single-quoted SQL string literal contents so they are not scanned
+ * as SQL. Handles Oracle-style doubled single quotes ('') as escaped quotes,
+ * and is aware of EXECUTE IMMEDIATE dynamic SQL, where the real SQL command
+ * is itself built as a string literal via concatenation.
+ *
+ * Known limitation: only triggers off the literal keyword "EXECUTE IMMEDIATE"
+ * appearing before the string. Dynamic SQL built into a variable earlier and
+ * executed later (v_sql := '...'; ... EXECUTE IMMEDIATE v_sql;) won't be
+ * recognized as code, and the literal will be treated as an ordinary value
+ * (fully masked). Also does not handle alternative Oracle quoting (q'[...]').
+ */
+function String stripStringLiterals(String sql) {
+	StringBuilder out = new StringBuilder(sql.length());
+	int n = sql.length();
+	int i = 0;
+	boolean inDynamicSqlChain = false;
+	boolean dataMode = true;
+	Matcher executeImmediate = Pattern.compile("EXECUTE\\s+IMMEDIATE", Pattern.CASE_INSENSITIVE).matcher(sql);
+	// SQL*Plus REM / PROMPT lines are not SQL; an apostrophe in them (PROMPT Don't run twice) is not a quote
+	Matcher remarkLine = Pattern.compile("[ \\t]*(REM|REMARK|PRO|PROMPT)\\b", Pattern.CASE_INSENSITIVE).matcher(sql);
+
+	while (i < n) {
+		String c = sql.substring(i, i + 1);
+
+		if (!inDynamicSqlChain && (i == 0 || sql.substring(i - 1, i).equals("\n")) && remarkLine.region(i, n).lookingAt()) {
+			int lineEnd = sql.indexOf("\n", i);
+			lineEnd = (lineEnd == -1) ? n : lineEnd;
+			out.append(sql.substring(i, lineEnd));
+			i = lineEnd;
+			continue;
+		}
+
+		if (c.equals("'")) {
+			if (!inDynamicSqlChain) {
+				dataMode = true;
+			}
+			out.append("'");
+			i = i + 1;
+			int valueStart = i;
+			int outValueStart = out.length();
+			boolean closed = false;
+			while (i < n) {
+				String lc = sql.substring(i, i + 1);
+				if (lc.equals("'")) {
+					if (i + 1 < n && sql.substring(i + 1, i + 2).equals("'")) {
+						// outside EXECUTE IMMEDIATE a doubled quote is just an escaped quote
+						if (inDynamicSqlChain) {
+							dataMode = !dataMode;
+						}
+						out.append("''");
+						i = i + 2;
+						continue;
+					} else {
+						out.append("'");
+						i = i + 1;
+						closed = true;
+						break;
+					}
+				} else {
+					if (dataMode) {
+						// preserve whitespace so masked data doesn't collapse into one
+						// long non-whitespace run, which slows regex matching below
+						if (lc.equals(" ") || lc.equals("\t") || lc.equals("\n") || lc.equals("\r")) {
+							out.append(lc);
+						} else {
+							out.append("x");
+						}
+					} else {
+						out.append(lc);
+					}
+					i = i + 1;
+				}
+			}
+			if (!closed) {
+				// never closed: not a value, keep the rest of the script as it is
+				out.setLength(outValueStart);
+				out.append(sql.substring(valueStart));
+				i = n;
+			}
+			continue;
+		}
+
+		if (!inDynamicSqlChain && executeImmediate.region(i, n).lookingAt()) {
+			inDynamicSqlChain = true;
+			dataMode = false;
+			out.append(sql.substring(i, executeImmediate.end()));
+			i = executeImmediate.end();
+			continue;
+		}
+
+		if (inDynamicSqlChain && c.equals(";")) {
+			inDynamicSqlChain = false;
+		}
+
+		out.append(c);
+		i = i + 1;
+	}
+
+	return out.toString();
+}
+
+/* @return true if GRANT is found */
+
+function boolean grant_found(String sql) {
+
+    System.out.println("Validation called: DisallowGrant");
+	String sqlToScan = stripStringLiterals(sql);
+	
+	final String regex = "(grant)(\\s)([^;]+)(\\s)(to)(\\s)";
+/* Specify DOTALL to include the newline characters */
+	final Pattern pattern = Pattern.compile(regex, Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(sqlToScan);
+	
+	while (matcher.find()) {
+	  return true;
+    }
+	return false;
+} 
+
+rule "DisallowGrant"
+    salience 1
+	when
+		woc : WithoutComments(grant_found(getText().toLowerCase()))
+		wc : WithComments(sqlFile == woc.sqlFile)
+	then
+		String errorMessage = "Grants are not allowed.  Grants were found on line(s): " + wc.getLineNumbers("grant");
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
+		
+	end

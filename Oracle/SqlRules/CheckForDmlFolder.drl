@@ -1,0 +1,55 @@
+/*
+@author Liquibase
+@version 1.0
+@date Oct 14, 2026
+@description Check for dml folder
+*/
+
+/*
+README: 
+
+This is a SQL Rule to ensure scripts are added to the dml folder.
+To Execute this rule use:
+hammer runRules [SQL file | SQL files folder]
+
+*/
+
+package com.datical.hammer.core.sqlrules.DmlFolder
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.io.File;
+
+import com.datical.db.project.Project;
+import com.datical.hammer.core.rules.Response;
+import com.datical.hammer.core.rules.Response.ResponseType;
+import com.datical.hammer.core.rules.WithComments;
+import com.datical.hammer.core.rules.WithoutComments;
+
+/***********************************************************  Rules  *************************************************************/
+
+/* @return false if validation fails; true otherwise */
+function boolean validateScriptLocation(File script) {
+
+    System.out.println("Validation called: CheckDmlFolder");
+
+	final String regex = "\\\\dml\\\\|\\/dml\\/";
+	final Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    final Matcher matcher = pattern.matcher(script.toString());
+	
+	while (matcher.find()) {
+	  return false;
+    }
+	return true;
+}
+
+rule "Script must be placed in dml folder"
+    salience 1
+	when
+		woc : WithoutComments(validateScriptLocation(getSqlFile()))
+	then
+		String errorMessage = "Script must be added to dml folder (Script: " + woc.getSqlFile().toString() + ")";
+        insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));	
+	end
+
+
