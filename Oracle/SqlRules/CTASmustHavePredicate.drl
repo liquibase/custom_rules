@@ -265,7 +265,7 @@ rule "CTASmustHavePredicate"
     salience 1
 	when
 		ctas : WithoutComments(CTAS_found(getText()))
-		ctas_where : WithoutComments(CTAS_without_WHERE(getText()))
+		ctas_where : WithoutComments(CTAS_without_WHERE(getText()), sqlFile == ctas.sqlFile)
 	then
 		reportCTASWithoutWhereLocations(ctas_where.getText(), ctas_where.getSqlFile().toString());
 		String errorMessage = "CTAS statements should have a WHERE clause. (Script: " + ctas_where.getSqlFile().toString() + ")";

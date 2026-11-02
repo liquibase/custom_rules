@@ -264,7 +264,7 @@ rule "CTASrequiredOnlyUpdateDelete"
     salience 1
 	when
 		ctas : WithoutComments(CTAS_required(getText()))
-		up_del : WithoutComments(update_delete(getText()))
+		up_del : WithoutComments(update_delete(getText()), sqlFile == ctas.sqlFile)
 	then
 		reportUpdateDeleteStatements(up_del.getText(), up_del.getSqlFile().toString());
 		String errorMessage = "Must backup data using CREATE TABLE ... AS SELECT (Script: " + ctas.getSqlFile().toString() + ")";

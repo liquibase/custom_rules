@@ -271,7 +271,7 @@ rule "RestrictCreateAlterDrop"
     salience 1
 	when
 		ddl : WithoutComments(ddl_found(getText()))
-		ddl_not_edit_owner : WithoutComments(ddl_without_edit_owner(getText()))
+		ddl_not_edit_owner : WithoutComments(ddl_without_edit_owner(getText()), sqlFile == ddl.sqlFile)
 	then
 		reportDdlWithoutEditOwnerLocations(ddl_not_edit_owner.getText(), ddl_not_edit_owner.getSqlFile().toString());
 		String errorMessage = "CREATE/ALTER/DROP can only be performed on objects in the EDIT_OWNER schema. (Script: " + ddl.getSqlFile().toString() + ")";
