@@ -153,7 +153,7 @@ rule "DisallowRevoke"
 		woc : WithoutComments(revoke_found(getText().toLowerCase()))
 		wc : WithComments(sqlFile == woc.sqlFile)
 	then
-		String errorMessage = "Revokes are not allowed.  Revoke was found on line(s): " + wc.getLineNumbers("revoke");
+		String errorMessage = "Revokes are not allowed.  Revoke was found on line(s): " + wc.getLineNumbers("revoke") + " (Script: " + woc.getSqlFile().toString() + ")";
         insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
 		
 	end

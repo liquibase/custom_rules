@@ -159,7 +159,7 @@ rule "DisallowGrant"
 		woc : WithoutComments(grant_found(getText().toLowerCase()))
 		wc : WithComments(sqlFile == woc.sqlFile)
 	then
-		String errorMessage = "Grants are not allowed.  Grants were found on line(s): " + wc.getLineNumbers("grant");
+		String errorMessage = "Grants are not allowed.  Grants were found on line(s): " + wc.getLineNumbers("grant") + " (Script: " + woc.getSqlFile().toString() + ")";
         insert(new Response(ResponseType.FAIL, errorMessage, drools.getRule().getName()));
 		
 	end
