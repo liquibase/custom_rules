@@ -155,7 +155,7 @@ rule "WARNforCommits"
 		woc : WithoutComments(commit_found(getText().toLowerCase()))
 		wc : WithComments(sqlFile == woc.sqlFile)
 	then
-		String errorMessage = "It is a best practice not to include commit statements.  Commit was found on line(s): " + wc.getLineNumbers("commit");
+		String errorMessage = "It is a best practice not to include commit statements.  Commit was found on line(s): " + wc.getLineNumbers("commit") + " (Script: " + woc.getSqlFile().toString() + ")";
         insert(new Response(ResponseType.WARN, errorMessage, drools.getRule().getName()));
 		
 	end
